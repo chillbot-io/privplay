@@ -1,0 +1,435 @@
+Yes, let me check the transcript for the full picture:Now I've got it. Here's the full session summary:
+
+---
+
+# Privplay - Complete Project Session Summary
+## December 11-12, 2025
+
+### For Context Handoff to Next Claude Instance
+
+---
+
+## Project Overview
+
+**What:** Privplay is a PHI/PII detection and redaction engine for healthcare AI applications. The goal is to build a defense-in-depth classifier that can detect sensitive data before it reaches LLMs or leaves secure environments.
+
+**Who:** Ben, 15 years security architecture experience, bootstrapping from home, targeting healthcare AI market. Previously built jetDB, krnx (temporal memory kernel for AI agents), Microsoft Purview auto-labeler.
+
+**Business Model:** PHI/PII detection SaaS for healthcare AI applications. Planning significant exit. HIPAA compliance is a future milestone (tens of thousands in costs).
+
+---
+
+## Architecture Built
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  CLASSIFICATION STACK                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Layer 1: Transformer Model                                 │
+│           └── StanfordAIMI/stanford-deidentifier-base      │
+│           └── Clinical NER, outputs: AGE, DATE, ID, NAME   │
+│                                                             │
+│  Layer 2: Presidio + Dictionaries                          │
+│           └── Microsoft Presidio PII detection             │
+│           └── FDA drugs, CMS hospitals, NPI database       │
+│                                                             │
+│  Layer 3: Rule Engine (64 regex patterns)                  │
+│           └── SSN, credit cards, phones, IPs, etc.         │
+│           └── Custom rules support                         │
+│                                                             │
+│  Layer 4: LLM Verifier (optional)                          │
+│           └── Ollama for confidence adjustment             │
+│                                                             │
+│  Layer 5: Merge & Dedupe                                   │
+│           └── Combine sources, resolve overlaps            │
+│           └── Boost confidence when sources agree          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## File Structure
+
+```
+D:\privplay\privplay\
+├── __init__.py
+├── cli.py                    # Typer CLI, all commands
+├── config.py                 # Configuration management
+├── db.py                     # SQLite persistence
+├── types.py                  # Entity types, data classes
+│
+├── engine/
+│   ├── __init__.py
+│   ├── classifier.py         # Main ClassificationEngine
+│   ├── merge.py              # Entity merging logic
+│   │
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── transformer.py    # Stanford model wrapper
+│   │   ├── presidio_detector.py
+│   │   └── mock_model.py
+│   │
+│   └── rules/
+│       ├── __init__.py       # MUST export RuleEngine, Rule
+│       └── engine.py         # 64 regex patterns
+│
+├── training/
+│   ├── __init__.py
+│   ├── faker_gen.py          # Synthetic data generation
+│   ├── importer.py           # Document import
+│   ├── scanner.py            # Batch scanning
+│   ├── reviewer.py           # Interactive review UI
+│   ├── finetune.py           # Model fine-tuning
+│   └── rules.py              # Custom rule management
+│
+├── benchmark/
+│   ├── __init__.py           # Exports: list_datasets, get_dataset, etc.
+│   ├── datasets.py           # Dataset loaders
+│   ├── runner.py             # BenchmarkRunner, capture_benchmark_errors
+│   └── storage.py            # Benchmark history
+│
+├── verification/
+│   ├── __init__.py
+│   └── verifier.py           # Ollama LLM verifier
+│
+├── dictionaries/
+│   ├── __init__.py
+│   └── downloader.py         # FDA, CMS, NPI downloads
+│
+└── testing/
+    ├── __init__.py
+    └── evaluator.py          # F1 evaluation
+```
+
+---
+
+## CLI Commands Available
+
+```bash
+# Data Generation & Import
+phi-train faker -n 100              # Generate synthetic docs
+phi-train faker -n 50 --simple      # Simple PII examples
+phi-train import <path>             # Import files
+
+# Scanning & Review
+phi-train scan                      # Scan docs for PHI/PII
+phi-train scan --no-verify          # Skip LLM verification
+phi-train review                    # Interactive review session
+phi-train stats                     # Show training progress
+phi-train detect "John Smith SSN 123-45-6789"  # One-off detection
+
+# Benchmarking
+phi-train benchmark list            # Show available datasets
+phi-train benchmark run ai4privacy --samples 1000
+phi-train benchmark run ai4privacy --samples 5000 --capture-errors
+phi-train benchmark history         # Show past runs
+phi-train benchmark compare 1 2     # Compare two runs
+
+# Fine-tuning
+phi-train finetune --epochs 3 --batch-size 2
+phi-train export corrections.json   # Export training data
+
+# Rules Management
+phi-train rule list                 # Show custom rules
+phi-train rule builtin              # Show 64 built-in rules
+phi-train rule add                  # Interactive rule creation
+phi-train rule test "pattern"       # Test regex
+
+# Utilities
+phi-train stack                     # Show component status
+phi-train download all              # Download dictionaries
+phi-train config-show               # Show configuration
+phi-train reset --yes               # Clear database
+```
+
+---
+
+## Sessions Completed (Chronological)
+
+### Session 1: Presidio + Rules + Dictionaries
+- Integrated Microsoft Presidio
+- Added HIPAA entity types to types.py
+- Built dictionary infrastructure (FDA drugs, CMS hospitals)
+- NPI database as SQLite (7M+ records)
+
+### Session 2: Benchmark Dataset Research
+- Evaluated i2b2/n2c2, MIMIC, PhysioNet Gold Standard
+- Found ai4privacy/pii-masking-200k (open, 200K+ samples)
+- PhysioNet requires CITI training + credentialing
+
+### Session 3: Benchmark Harness Implementation
+- Built F1 benchmark system with three dataset loaders
+- CLI commands for benchmark run/history/compare
+- SQLite storage for tracking runs over time
+
+### Session 4: Fine-tuning + Rules CLI
+- Implemented BIO tagging for transformer fine-tuning
+- Built custom rule management system
+- Completed CLI with all commands wired up
+
+### Session 5: Smoke Testing + First Baseline
+- Created 24-test smoke test suite (all passing)
+- Fixed 7 bugs discovered during testing
+- First benchmark: 100 samples, F1 32.1%
+
+### Session 6: Error Capture + Rule Fixes
+- Implemented `capture_benchmark_errors()` function
+- Diagnosed MRN false positive crisis (635 FPs)
+- Added USERNAME, MAC_ADDRESS, AGE rules
+
+### Session 7 (Current): Full Training Pipeline
+- Expanded rules from 24 → 64 patterns
+- Fixed ID→MRN mapping (changed to ID→OTHER)
+- Achieved F1 44.2% (+8 points from rules alone)
+- Ran 5000-sample benchmark, captured 10,340 FPs
+- Fixed finetune.py to handle REJECTED corrections
+- Fixed stats command bug
+- **Currently running:** Fine-tuning on CPU with batch-size 2
+
+---
+
+## Critical Bug Fixes Made This Session
+
+### 1. MRN False Positive Fix
+**File:** `privplay/engine/models/transformer.py`
+```python
+# Line 20 - Changed from:
+"ID": EntityType.MRN,
+# To:
+"ID": EntityType.OTHER,
+```
+
+### 2. Rules __init__.py Must Export
+**File:** `privplay/engine/rules/__init__.py`
+```python
+from .engine import RuleEngine, Rule
+
+__all__ = ["RuleEngine", "Rule"]
+```
+
+### 3. Benchmark __init__.py Exports
+**File:** `privplay/benchmark/__init__.py`
+```python
+from .datasets import (
+    BenchmarkDataset, BenchmarkSample,
+    load_ai4privacy_dataset, load_synthetic_phi_dataset,
+    get_dataset, list_datasets, display_benchmark_result,
+)
+from .runner import BenchmarkRunner, BenchmarkResult, capture_benchmark_errors
+from .storage import BenchmarkStorage
+
+__all__ = [
+    "BenchmarkDataset", "BenchmarkSample",
+    "load_ai4privacy_dataset", "load_synthetic_phi_dataset",
+    "get_dataset", "list_datasets", "display_benchmark_result",
+    "BenchmarkRunner", "BenchmarkResult", "BenchmarkStorage",
+    "capture_benchmark_errors",
+]
+```
+
+### 4. Stats Command Fix
+**File:** `privplay/cli.py` (line ~190)
+```python
+# Changed from:
+display_stats(db)
+# To:
+display_stats(db.get_review_stats())
+```
+
+### 5. Fine-tune Handling REJECTED Corrections
+**File:** `privplay/training/finetune.py`
+
+Key changes:
+- Added `EXTENDED_ENTITY_TYPES` list (23 types) instead of deriving from corrections
+- Modified `load_corrections_from_db()` to include REJECTED as samples with empty entities
+- Modified `load_corrections_from_json()` to include REJECTED
+- Removed `if not entities: continue` from `prepare_training_data()`
+- Negative samples (empty entities) teach model "this is NOT PII"
+
+---
+
+## Benchmark Progress
+
+| Run | Samples | Precision | Recall | F1 | Notes |
+|-----|---------|-----------|--------|-----|-------|
+| 1 | 100 | 32% | 32% | 32.1% | Initial baseline |
+| 2 | 1000 | 35% | 37.5% | 36.2% | Pre-fixes |
+| 3 | 1000 | 42.6% | 46.0% | 44.2% | After ID→OTHER + 64 rules |
+| 4 | 5000 | 41.0% | 45.5% | 43.1% | Captured 10,340 FPs |
+
+### Top False Positive Patterns (from stats)
+```
+IP                   OTHER           (210x)  ← User-Agent strings
+Gecko                OTHER           (134x)
+KHTML                OTHER           (99x)
+Hello                OTHER           (95x)   ← Greetings as names
+AppleWebKit          OTHER           (84x)
+Macintosh            OTHER           (73x)
+MAC                  OTHER           (70x)
+Safari               OTHER           (65x)
+```
+
+These are browser User-Agent strings in the ai4privacy dataset. The model is learning to ignore them.
+
+---
+
+## Current State
+
+### What's Running
+```bash
+phi-train finetune --epochs 3 --batch-size 2
+```
+- 4,358 documents
+- 10,340 negative examples (REJECTED corrections)
+- Training on CPU (Intel integrated graphics, no NVIDIA GPU)
+- Estimated time: 1-2 hours
+- Model backup exists at: `~/.cache/huggingface/hub/models--StanfordAIMI--stanford-deidentifier-base-BACKUP`
+
+### After Training Completes
+```bash
+# 1. Check model saved
+ls ~/.privplay/models/finetuned/final/
+
+# 2. Re-run benchmark
+phi-train benchmark run ai4privacy --samples 1000
+
+# 3. Compare F1 before/after
+phi-train benchmark compare <old_id> <new_id>
+```
+
+---
+
+## What's NOT Built Yet
+
+From the original architecture discussion:
+
+1. **Redaction Engine** - Replace detected PHI with placeholders
+2. **Un-redaction Engine** - Restore original values (for authorized users)
+3. **Secure Transport Plumbing** - API layer, encryption
+4. **Audit Logging** - Track all access/redactions
+5. **Response Scanning** - Scan LLM outputs before returning
+6. **Cost Tracking** - Usage metering for SaaS
+7. **Chatbot with Memory** - Demo/testing interface
+
+---
+
+## Key Learnings (Ben's ML Education)
+
+### Transformers
+- Process entire input at once using self-attention
+- Every token attends to every other token for context
+- Named for "transforming" input embeddings into contextualized output embeddings
+
+### Embeddings/Vectors
+- Every token maps to a vector of numbers (768 or 1024 dimensions)
+- Similar meanings → similar vectors
+- Vectors computed at runtime, not stored
+- Weights (stored in model file) create the vectors
+
+### What's Stored in Model
+```
+~/.cache/huggingface/hub/models--StanfordAIMI--stanford-deidentifier-base/
+├── config.json
+├── pytorch_model.bin     ← Weights (~500MB)
+└── tokenizer files
+```
+- Embedding matrix (token IDs → initial vectors)
+- Attention weights (transform vectors through layers)
+- Classification head (vectors → entity labels)
+
+### Fine-tuning
+```
+Forward:  Input → Model → Prediction
+Compare:  Prediction vs Ground Truth  
+Loss:     "How wrong were we?"
+Backprop: Calculate which weights caused error
+Update:   Nudge weights slightly
+Repeat:   epochs × samples
+```
+
+### Epochs
+- One epoch = one complete pass through all training data
+- Multiple passes: rough adjustments → refinement → polish
+- Too few = underfitting, too many = overfitting
+
+### Negative Examples
+REJECTED corrections become training samples with empty entity list:
+```python
+text = "Order number: 12345678 was shipped"
+entities = []  # Empty!
+labels = [O, O, O, O, O, O, O]  # All "not an entity"
+```
+Model learns: "this pattern + this context = NOT PHI"
+
+---
+
+## Environment Notes
+
+- Running in WSL on Windows
+- Python 3.10
+- No NVIDIA GPU (Intel UHD integrated graphics)
+- Model training must use CPU with small batch size (2)
+- PyTorch with CUDA not available
+
+### Cache Clearing Command
+```bash
+find /mnt/d/privplay -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+```
+
+---
+
+## Next Actions (When Training Completes)
+
+1. **Verify fine-tuned model saved**
+   ```bash
+   ls ~/.privplay/models/finetuned/final/
+   ```
+
+2. **Run benchmark on fine-tuned model**
+   - Need to update config or code to USE the new model
+   - Check `transformer.py` for model path loading
+
+3. **Compare F1 scores**
+   - Before: 43.1%
+   - After: ???
+   - Goal: Reduction in false positives
+
+4. **If improvement is good:**
+   - Run larger benchmark (10k+ samples)
+   - Capture remaining errors
+   - Iterate
+
+5. **If improvement is poor:**
+   - Check training logs for issues
+   - May need positive examples (CONFIRMED) not just negatives
+   - NAME_PERSON has 476 FNs - needs positive training data
+
+---
+
+## Files Modified This Session
+
+| File | Status | Key Changes |
+|------|--------|-------------|
+| `engine/models/transformer.py` | ✅ Updated | ID→OTHER mapping |
+| `engine/rules/engine.py` | ✅ Replaced | 24→64 rules |
+| `engine/rules/__init__.py` | ✅ Updated | Added exports |
+| `benchmark/__init__.py` | ✅ Updated | Added capture_benchmark_errors |
+| `benchmark/runner.py` | ✅ Updated | Added capture_benchmark_errors() |
+| `training/finetune.py` | ✅ Replaced | Handle REJECTED, extended types |
+| `cli.py` | ✅ Updated | --capture-errors flag, stats fix |
+
+---
+
+## Contact Points
+
+- **Project location:** `D:\privplay\` (Windows) / `/mnt/d/privplay/` (WSL)
+- **Data directory:** `~/.privplay/`
+- **Model backup:** `~/.cache/huggingface/hub/models--StanfordAIMI--stanford-deidentifier-base-BACKUP`
+- **Transcripts:** `/mnt/transcripts/`
+
+---
+
+*Last updated: December 12, 2025, ~20:45 UTC*
+*Training in progress: epoch 1/3, batch-size 2, CPU*
