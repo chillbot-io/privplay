@@ -533,7 +533,13 @@ def capture_benchmark_errors(
     db = None,
 ) -> dict:
     """
-    Capture FPs from benchmark as REJECTED corrections for training.
+    Capture training data from benchmark results.
+    
+    Captures BOTH:
+    - True Positives → CONFIRMED (model correctly detected PHI)
+    - False Positives → REJECTED (model incorrectly flagged non-PHI)
+    
+    This creates balanced training data for fine-tuning.
     
     Args:
         result: Benchmark result with sample_results
@@ -541,7 +547,7 @@ def capture_benchmark_errors(
         db: Database instance (uses default if None)
         
     Returns:
-        Dict with counts: {'documents': n, 'fps_captured': n, 'fns_skipped': n}
+        Dict with counts: {'documents': n, 'tps_captured': n, 'fps_captured': n, 'fns_skipped': n}
     """
     from ..db import get_db
     from ..types import Document, Entity, Correction, EntityType, DecisionType, SourceType
@@ -554,6 +560,7 @@ def capture_benchmark_errors(
     sample_lookup = {s.id: s for s in dataset.samples}
     
     docs_created = 0
+    tps_captured = 0
     fps_captured = 0
     fns_skipped = 0
     
@@ -561,12 +568,14 @@ def capture_benchmark_errors(
         sample = sample_lookup.get(sample_result.sample_id)
         if not sample:
             continue
-            
-        # Get FPs for this sample
+        
+        # Get all match types
+        tps = [m for m in sample_result.matches if m.match_type == "true_positive"]
         fps = [m for m in sample_result.matches if m.match_type == "false_positive"]
         fns = [m for m in sample_result.matches if m.match_type == "false_negative"]
         
-        if not fps:
+        # Skip samples with no detections we can learn from
+        if not tps and not fps:
             fns_skipped += len(fns)
             continue
         
@@ -584,7 +593,56 @@ def capture_benchmark_errors(
             # Document may already exist from previous run
             pass
         
-        # Create corrections for FPs
+        # Capture TRUE POSITIVES as CONFIRMED
+        # These are cases where our model correctly detected PHI
+        for match in tps:
+            detected = match.detected
+            ground_truth = match.ground_truth
+            
+            # Create entity record
+            entity = Entity(
+                id=str(uuid.uuid4()),
+                text=detected.text,
+                start=detected.start,
+                end=detected.end,
+                entity_type=detected.entity_type,
+                confidence=detected.confidence,
+                source=detected.source,
+            )
+            
+            try:
+                db.add_entity(entity, doc.id)
+            except Exception:
+                pass
+            
+            # Get context
+            ctx_start = max(0, detected.start - 50)
+            ctx_end = min(len(sample.text), detected.end + 50)
+            
+            # Create CONFIRMED correction
+            correction = Correction(
+                id=str(uuid.uuid4()),
+                entity_id=entity.id,
+                document_id=doc.id,
+                entity_text=detected.text,
+                entity_start=detected.start,
+                entity_end=detected.end,
+                detected_type=detected.entity_type,
+                decision=DecisionType.CONFIRMED,
+                correct_type=None,  # Type was correct
+                context_before=sample.text[ctx_start:detected.start],
+                context_after=sample.text[detected.end:ctx_end],
+                ner_confidence=detected.confidence,
+            )
+            
+            try:
+                db.add_correction(correction)
+                tps_captured += 1
+            except Exception as e:
+                logger.warning(f"Failed to add TP correction: {e}")
+        
+        # Capture FALSE POSITIVES as REJECTED
+        # These are cases where our model incorrectly flagged non-PHI
         for match in fps:
             detected = match.detected
             
@@ -602,7 +660,6 @@ def capture_benchmark_errors(
             try:
                 db.add_entity(entity, doc.id)
             except Exception:
-                # May already exist
                 pass
             
             # Get context
@@ -629,13 +686,13 @@ def capture_benchmark_errors(
                 db.add_correction(correction)
                 fps_captured += 1
             except Exception as e:
-                logger.warning(f"Failed to add correction: {e}")
+                logger.warning(f"Failed to add FP correction: {e}")
         
         fns_skipped += len(fns)
     
     return {
         "documents": docs_created,
+        "tps_captured": tps_captured,
         "fps_captured": fps_captured,
         "fns_skipped": fns_skipped,
     }
-

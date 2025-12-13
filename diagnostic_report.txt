@@ -1,0 +1,244 @@
+Privplay Diagnostic Report v2
+Generated: 2025-12-12T17:43:10.665152
+Python: 3.10.12 (main, Nov  4 2025, 08:48:33) [GCC 11.4.0]
+CWD: /mnt/d/privplay
+
+============================================================
+ 1. ENVIRONMENT & IMPORTS
+============================================================
+
+[✓ PASS] Core types import
+[✓ PASS] Expected EntityTypes exist
+         Found all: ['SSN', 'CREDIT_CARD', 'EMAIL', 'PHONE']
+All EntityTypes: ['NAME_PERSON', 'NAME_PATIENT', 'NAME_PROVIDER', 'NAME_RELATIVE', 'SSN', 'MRN', 'PASSPORT', 'DRIVER_LICENSE', 'ACCOUNT_NUMBER', 'DEVICE_ID', 'EMAIL', 'PHONE', 'FAX', 'ADDRESS', 'ZIP', 'DATE', 'DATE_DOB', 'DATE_ADMISSION', 'DATE_DISCHARGE', 'AGE', 'CREDIT_CARD', 'BANK_ACCOUNT', 'ROUTING_NUMBER', 'IP_ADDRESS', 'MAC_ADDRESS', 'URL', 'USERNAME', 'BIOMETRIC', 'VIN', 'UDI', 'HEALTH_PLAN_ID', 'DEA_NUMBER', 'MEDICAL_LICENSE', 'NPI', 'DRUG', 'LAB_TEST', 'HEALTH_PLAN', 'HOSPITAL', 'OTHER']
+[✓ PASS] Expected SourceTypes exist
+         Found all: ['RULE', 'PRESIDIO', 'MODEL', 'MERGED']
+All SourceTypes: ['MODEL', 'PRESIDIO', 'RULE', 'DICTIONARY', 'MERGED']
+[✓ PASS] Config load
+  confidence_threshold: 0.95
+  presidio.enabled: True
+  verification.provider: ollama
+
+============================================================
+ 2. FILE SYSTEM & PATHS
+============================================================
+
+[✓ PASS] ~/.privplay directory
+         /home/krnx/.privplay (6 items)
+[✓ PASS] Dictionaries directory
+         /home/krnx/.privplay/dictionaries (1 items)
+[✓ PASS] Drugs dictionary
+         /home/krnx/.privplay/dictionaries/drugs.txt (1,867,754 bytes)
+[⚠ WARN] Hospitals dictionary
+         /home/krnx/.privplay/dictionaries/hospitals.txt not found (optional)
+[✓ PASS] NPI directory
+         /home/krnx/.privplay/npi (2 items)
+[✓ PASS] NPI database
+         /home/krnx/.privplay/npi/npi.db (535,707,648 bytes)
+[✓ PASS] Models directory
+         /home/krnx/.privplay/models (1 items)
+[✓ PASS] Main database
+         /home/krnx/.privplay/privplay.db (127,000,576 bytes)
+
+============================================================
+ 3. DICTIONARY STATUS
+============================================================
+
+Download status:
+  ✓ drugs: True
+  ✗ hospitals: False
+  ✓ npi: True
+  ✓ payers: True
+  ✓ lab_tests: True
+[✓ PASS] Drugs dictionary downloaded
+
+Dictionary entry counts:
+[⚠ WARN] Could not get dictionary counts
+         unsupported format string passed to dict.__format__
+
+============================================================
+ 4. TRANSFORMER MODEL
+============================================================
+
+Loading transformer model...
+[✓ PASS] Model load
+         Model: transformer:StanfordAIMI/stanford-deidentifier-base
+Test input: 'Patient John Smith was born on 01/15/1980'
+Raw detections (2):
+  - NAME_PATIENT: 'John Smith' @ [8:18] (conf: 0.991)
+  - DATE: '01/15/1980' @ [31:41] (conf: 1.000)
+[✓ PASS] Model detects entities in name region
+         Found 1 entities
+[✓ PASS] Model detects date
+
+============================================================
+ 5. PRESIDIO DETECTOR
+============================================================
+
+Loading Presidio...
+[✓ PASS] Presidio load
+Test input: 'Email: john.doe@example.com SSN: 123-45-6789 Phone: 555-123-4567'
+Detections (2):
+  - URL: 'john.do' (conf: 0.50)
+  - URL: 'example.com' (conf: 0.50)
+[✗ FAIL] Presidio finds email
+         Looking for john.doe@example.com
+[✗ FAIL] Presidio finds SSN
+         Looking for 123-45-6789
+
+============================================================
+ 6. RULES ENGINE
+============================================================
+
+[✓ PASS] Rules engine load
+         Rule count: 64
+
+Rule detection tests (CRITICAL):
+  ✓ Credit card (Visa): '4111111111111111' -> ['CREDIT_CARD', 'CREDIT_CARD'] (expected: CREDIT_CARD)
+  ✓ Credit card (MC): '5500000000000004' -> ['CREDIT_CARD', 'CREDIT_CARD'] (expected: CREDIT_CARD)
+  ✓ Credit card (16-digit): '6381973478101820' -> ['CREDIT_CARD'] (expected: CREDIT_CARD)
+  ✓ SSN (dashed): '123-45-6789' -> ['SSN'] (expected: SSN)
+  ✓ SSN (no dash): '123456789' -> ['SSN'] (expected: SSN)
+  ✓ Email: 'test@example.com' -> ['EMAIL', 'USERNAME'] (expected: EMAIL)
+  ✓ Phone (parens): '(555) 123-4567' -> ['PHONE'] (expected: PHONE)
+  ✓ Phone (dashed): '555-123-4567' -> ['PHONE'] (expected: PHONE)
+  ✓ IP Address: '192.168.1.100' -> ['IP_ADDRESS'] (expected: IP_ADDRESS)
+  ✓ MAC Address: '00:1A:2B:3C:4D:5E' -> ['MAC_ADDRESS'] (expected: MAC_ADDRESS)
+
+============================================================
+ 7. CLASSIFICATION ENGINE - MERGE LOGIC (CRITICAL)
+============================================================
+
+Loading classification engine...
+[✓ PASS] Engine load
+Stack status:
+  transformer: {'name': 'transformer:StanfordAIMI/stanford-deidentifier-base', 'available': True}
+  presidio: {'enabled': True, 'available': True, 'error': None}
+  rules: {'enabled': True, 'rule_count': 64}
+  verifier: {'provider': 'ollama', 'available': True}
+
+========================================
+CRITICAL TEST 1: Tiered merge - CC type
+========================================
+Input: 'My credit card number is 6381973478101820'
+Results:
+  - CREDIT_CARD: '6381973478101820' (conf: 0.900, source: MERGED)
+[✓ PASS] CC typed as CREDIT_CARD (not OTHER)
+         Got type: CREDIT_CARD
+[✓ PASS] CC source is RULE or MERGED
+         Got source: MERGED
+[✓ PASS] CC confidence >= 0.9
+         Got: 0.900
+
+========================================
+CRITICAL TEST 2: Multi-entity detection
+========================================
+Input: 'SSN: 123-45-6789, Email: test@test.com, Card: 4111111111111111'
+Results (3):
+  - SSN: 'SSN: 123-45-6789' (source: MERGED)
+  - EMAIL: 'test@test.com' (source: MERGED)
+  - CREDIT_CARD: '4111111111111111' (source: MERGED)
+[✓ PASS] SSN detected with correct type
+[✓ PASS] Email detected with correct type
+[✓ PASS] Credit card detected with correct type
+
+============================================================
+ 8. LLM VERIFIER (Optional)
+============================================================
+
+[✓ PASS] LLM Verifier available
+         Provider: ollama
+
+============================================================
+ 9. DATABASE
+============================================================
+
+[✓ PASS] Database file exists
+         127,000,576 bytes
+
+Database introspection:
+  Available methods: ['add_correction', 'add_document', 'add_entities', 'add_entity', 'add_pattern', 'count_corrections', 'count_corrections_by_decision', 'count_documents', 'count_entities', 'count_entities_above_threshold', 'count_entities_needing_review', 'get_corrections', 'get_document', 'get_entities_for_document', 'get_entities_for_review']...
+  count_corrections(): 0
+
+============================================================
+ 10. BENCHMARK PIPELINE
+============================================================
+
+Available datasets:
+  - synthetic_phi: Synthetically generated clinical notes with ground-truth PHI...
+  - ai4privacy: AI4Privacy PII-Masking-200k dataset from HuggingFace (54 PII...
+  - physionet: PhysioNet Gold Standard de-identification corpus (requires c...
+
+Loading ai4privacy (10 samples for quick test)...
+[✓ PASS] Dataset load
+         Loaded 10 samples
+Sample structure:
+  id: ai4privacy_4b091096d754
+  text length: 189
+  entities: 2
+  first entity: PHONEIMEI -> OTHER ('06-184755-866851-3...')
+
+Running benchmark on 10 samples...
+Results:
+  Precision: 42.9%
+  Recall: 51.7%
+  F1: 46.9%
+  TP: 15, FP: 20, FN: 14
+[✓ PASS] Benchmark produces TPs
+         15 true positives
+
+Per-entity breakdown:
+  OTHER: F1=48% (TP=8, FP=9, FN=8)
+  ADDRESS: F1=57% (TP=2, FP=2, FN=1)
+  DEVICE_ID: F1=50% (TP=1, FP=2, FN=0)
+  NAME_PERSON: F1=40% (TP=1, FP=1, FN=2)
+  DATE_DOB: F1=100% (TP=1, FP=0, FN=0)
+  IP_ADDRESS: F1=100% (TP=1, FP=0, FN=0)
+  EMAIL: F1=100% (TP=1, FP=0, FN=0)
+  AGE: F1=0% (TP=0, FP=0, FN=2)
+  CREDIT_CARD: F1=0% (TP=0, FP=1, FN=0)
+  DATE: F1=0% (TP=0, FP=3, FN=0)
+
+============================================================
+ 11. ENTITY LABEL MAPPING
+============================================================
+
+Checking ai4privacy -> internal label mapping:
+  ✓ CREDITCARDNUMBER -> CREDIT_CARD (expected: CREDIT_CARD)
+  ✓ SSN -> SSN (expected: SSN)
+  ✓ EMAIL -> EMAIL (expected: EMAIL)
+  ✓ PHONENUMBER -> PHONE (expected: PHONE)
+  ✓ IPV4 -> IP_ADDRESS (expected: IP_ADDRESS)
+  ✓ DRIVERLICENSE -> DRIVER_LICENSE (expected: DRIVER_LICENSE)
+
+Testing _normalize_label():
+  'CREDITCARDNUMBER' -> 'CREDIT_CARD'
+  'B-CREDITCARDNUMBER' -> 'CREDIT_CARD'
+  'I-SSN' -> 'SSN'
+  'UNKNOWN_LABEL' -> 'OTHER'
+
+============================================================
+ 12. TRAINING PIPELINE
+============================================================
+
+Checking training data infrastructure:
+  Relevant methods found: ['_row_to_correction', 'add_correction', 'count_corrections', 'count_corrections_by_decision', 'get_corrections']
+  Corrections in DB: 0
+[✓ PASS] Can access corrections
+         0 corrections
+
+============================================================
+ SUMMARY
+============================================================
+
+Completed in 60.6 seconds
+
+  ✓ PASSES:   45
+  ✗ FAILS:    2
+  ⚠ WARNINGS: 2
+
+🚨 STATUS: 2 CRITICAL ISSUES NEED ATTENTION
+
+Review the FAIL items above before proceeding.
+
+============================================================

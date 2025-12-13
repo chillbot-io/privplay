@@ -420,7 +420,7 @@ def benchmark_run(
     mock: bool = typer.Option(False, "--mock", help="Use mock model"),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to history"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
-    capture_errors: bool = typer.Option(False, "--capture-errors", help="Capture TPs and FPs as training data"),
+    capture_errors: bool = typer.Option(False, "--capture-errors", help="Capture FPs as training data"),
 ):
     """Run benchmark on a dataset."""
     init_app(data_dir)
@@ -458,21 +458,15 @@ def benchmark_run(
     # Display results
     display_benchmark_result(result)
     
-    # Capture training data (both TPs and FPs)
+    # Capture errors for training
     if capture_errors:
         console.print()
-        console.print("[bold]Capturing training data...[/bold]")
+        console.print("[bold]Capturing errors for training...[/bold]")
         stats = capture_benchmark_errors(result, ds)
         console.print()
-        console.print(f"[green]✓ Captured {stats['tps_captured']} TPs as CONFIRMED (positive examples)[/green]")
-        console.print(f"[yellow]✓ Captured {stats['fps_captured']} FPs as REJECTED (negative examples)[/yellow]")
+        console.print(f"[green]✓ Captured {stats['fps_captured']} FPs as REJECTED corrections[/green]")
         console.print(f"[dim]  Documents created: {stats['documents']}[/dim]")
-        console.print(f"[dim]  FNs skipped (can't learn from these): {stats['fns_skipped']}[/dim]")
-        console.print()
-        total = stats['tps_captured'] + stats['fps_captured']
-        if total > 0:
-            balance = stats['tps_captured'] / total * 100
-            console.print(f"[bold]Training data balance: {balance:.1f}% positive, {100-balance:.1f}% negative[/bold]")
+        console.print(f"[dim]  FNs skipped: {stats['fns_skipped']}[/dim]")
 
 
 @benchmark_app.command("history")
@@ -485,7 +479,7 @@ def benchmark_history(
     init_app(data_dir)
     
     storage = BenchmarkStorage()
-    runs = storage.get_recent_runs(dataset_name=dataset, limit=limit)
+    runs = storage.get_history(dataset_name=dataset, limit=limit)
     
     if not runs:
         console.print("[dim]No benchmark history found.[/dim]")
@@ -496,7 +490,6 @@ def benchmark_history(
     console.print("─" * 80)
     
     table = Table(show_header=True, header_style="bold")
-    table.add_column("ID")
     table.add_column("Date")
     table.add_column("Dataset")
     table.add_column("Samples")
@@ -507,7 +500,6 @@ def benchmark_history(
     
     for run in runs:
         table.add_row(
-            run.run_id[:12] + "...",
             run.timestamp.strftime("%Y-%m-%d %H:%M"),
             run.dataset_name[:15],
             str(run.num_samples),
@@ -523,8 +515,8 @@ def benchmark_history(
 
 @benchmark_app.command("compare")
 def benchmark_compare(
-    id1: str = typer.Argument(..., help="First run ID (or prefix)"),
-    id2: str = typer.Argument(..., help="Second run ID (or prefix)"),
+    id1: str = typer.Argument(..., help="First run ID"),
+    id2: str = typer.Argument(..., help="Second run ID"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Data directory"),
 ):
     """Compare two benchmark runs."""
@@ -532,16 +524,8 @@ def benchmark_compare(
     
     storage = BenchmarkStorage()
     
-    # Allow partial ID matching
-    runs = storage.get_recent_runs(limit=100)
-    
-    run1 = None
-    run2 = None
-    for run in runs:
-        if run.run_id.startswith(id1):
-            run1 = run
-        if run.run_id.startswith(id2):
-            run2 = run
+    run1 = storage.get_run(id1)
+    run2 = storage.get_run(id2)
     
     if not run1:
         console.print(f"[red]Run not found: {id1}[/red]")
@@ -603,7 +587,9 @@ def finetune(
             console.print("500+ is recommended for meaningful improvement.")
             console.print()
             console.print("Build corrections with:")
-            console.print("  [bold]phi-train benchmark run ai4privacy -n 1000 --capture-errors[/bold]")
+            console.print("  [bold]phi-train faker -n 100[/bold]    # Generate docs")
+            console.print("  [bold]phi-train scan[/bold]            # Detect entities")
+            console.print("  [bold]phi-train review[/bold]          # Review & correct")
             console.print()
             if len(corrections) < 10:
                 raise typer.Exit(1)

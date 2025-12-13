@@ -11,7 +11,7 @@ import yaml
 class PresidioConfig:
     """Presidio PII detection settings."""
     enabled: bool = True
-    score_threshold: float = 0.5
+    score_threshold: float = 0.7
     languages: list = field(default_factory=lambda: ["en"])
 
 

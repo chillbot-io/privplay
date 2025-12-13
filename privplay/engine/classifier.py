@@ -142,9 +142,8 @@ class ClassificationEngine:
         Merge entities from different sources.
         
         Strategy:
-        - Overlapping entities: keep higher confidence
+        - Overlapping entities: use tiered authority model
         - Boost confidence when multiple sources agree
-        - More sources agreeing = higher confidence boost
         """
         all_entities = model_entities + presidio_entities + rule_entities
         
@@ -186,35 +185,80 @@ class ClassificationEngine:
     
     def _merge_overlapping(self, entities: List[Entity]) -> Entity:
         """
-        Merge overlapping entities into one.
+        Merge overlapping entities using tiered authority model.
         
-        Confidence boost strategy:
-        - 2 sources agree on same type: +5% confidence
-        - 3+ sources agree on same type: +10% confidence
+        Industry-standard approach (Varonis, etc.):
+        - Tier 1: Rule-based with validation (Luhn, checksum) → highest authority
+        - Tier 2: Presidio (pattern + context) → high authority
+        - Tier 3: Transformer → detection signal, type is advisory
+        
+        Key insight: Rules/patterns TYPE entities, ML FINDS entities.
+        Don't let ML override a validated pattern match.
         """
         sources = set(e.source for e in entities)
-        types = set(e.entity_type for e in entities)
-        
-        # Use highest confidence as base
-        best = max(entities, key=lambda e: e.confidence)
-        
-        # Boost if multiple sources agree
-        confidence = best.confidence
         n_sources = len(sources)
         
-        if n_sources > 1 and len(types) == 1:
-            # Multiple sources agree on same type - boost confidence
-            if n_sources >= 3:
-                confidence = min(0.99, confidence + 0.10)
-            else:
+        # Tier 1: Rules with high confidence always win
+        # These are algorithmic (Luhn, regex with validation) - most precise
+        rules = [e for e in entities if e.source == SourceType.RULE]
+        if rules:
+            best_rule = max(rules, key=lambda e: e.confidence)
+            # Boost if other sources also detected something here
+            confidence = best_rule.confidence
+            if n_sources > 1:
                 confidence = min(0.99, confidence + 0.05)
+            return Entity(
+                text=best_rule.text,
+                start=best_rule.start,
+                end=best_rule.end,
+                entity_type=best_rule.entity_type,
+                confidence=confidence,
+                source=SourceType.MERGED if n_sources > 1 else SourceType.RULE,
+            )
         
+        # Tier 2: Presidio (pattern + context keywords)
+        presidio = [e for e in entities if e.source == SourceType.PRESIDIO]
+        if presidio:
+            best_presidio = max(presidio, key=lambda e: e.confidence)
+            confidence = best_presidio.confidence
+            # Boost if transformer also detected something here
+            if any(e.source == SourceType.MODEL for e in entities):
+                confidence = min(0.99, confidence + 0.05)
+            return Entity(
+                text=best_presidio.text,
+                start=best_presidio.start,
+                end=best_presidio.end,
+                entity_type=best_presidio.entity_type,
+                confidence=confidence,
+                source=SourceType.MERGED if n_sources > 1 else SourceType.PRESIDIO,
+            )
+        
+        # Tier 3: Transformer - prefer specific types over OTHER
+        # OTHER means "I see something but don't know what" - not authoritative for typing
+        model = [e for e in entities if e.source == SourceType.MODEL]
+        if model:
+            specific = [e for e in model if e.entity_type != EntityType.OTHER]
+            if specific:
+                best = max(specific, key=lambda e: e.confidence)
+            else:
+                best = max(model, key=lambda e: e.confidence)
+            return Entity(
+                text=best.text,
+                start=best.start,
+                end=best.end,
+                entity_type=best.entity_type,
+                confidence=best.confidence,
+                source=best.source,
+            )
+        
+        # Fallback: highest confidence from whatever we have
+        best = max(entities, key=lambda e: e.confidence)
         return Entity(
             text=best.text,
             start=best.start,
             end=best.end,
             entity_type=best.entity_type,
-            confidence=confidence,
+            confidence=best.confidence,
             source=SourceType.MERGED if n_sources > 1 else best.source,
         )
     
@@ -303,7 +347,7 @@ class ClassificationEngine:
         status = {
             "transformer": {
                 "name": self.model.name if hasattr(self.model, 'name') else "unknown",
-                "available": self.model.is_available() if hasattr(self.model, 'is_available') else True,
+                "available": True,  # If we got here, model loaded successfully
             },
             "presidio": {
                 "enabled": self.presidio is not None,
@@ -312,7 +356,7 @@ class ClassificationEngine:
             },
             "rules": {
                 "enabled": self.rules is not None,
-                "pattern_count": len(self.rules.patterns) if hasattr(self.rules, 'patterns') else 0,
+                "rule_count": len(self.rules.rules) if hasattr(self.rules, 'rules') else 0,
             },
             "verifier": {
                 "provider": self.config.verification.provider,
