@@ -300,7 +300,7 @@ class BenchmarkRunner:
             config={
                 "verify": verify,
                 "overlap_threshold": self.overlap_threshold,
-                "model": getattr(self.engine.model, "name", "unknown"),
+                "model": f"phi:{getattr(getattr(self.engine, 'phi_model', None), 'name', 'none')},pii:{getattr(getattr(self.engine, 'pii_model', None), 'name', 'none')}",
             },
         )
         
