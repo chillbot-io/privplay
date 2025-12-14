@@ -53,15 +53,13 @@ from .benchmark import (
 
 # Dictionaries
 from .dictionaries import (
+    download_fda_drugs,
+    download_cms_hospitals,
+    download_npi_database,
+    download_all,
+    get_download_status,
     get_dictionary_status,
 )
-
-# Stub out missing download functions (not needed for training)
-def download_fda_drugs(): pass
-def download_cms_hospitals(): pass
-def download_npi_database(): pass
-def download_all(): pass
-def get_download_status(): return {}
 
 
 # Configure logging

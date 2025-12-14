@@ -1,23 +1,108 @@
 """Main classification engine - combines models, rules, and verification."""
 
-from typing import List, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Set, Dict, Any
 import logging
+import uuid
 
 from ..types import Entity, EntityType, SourceType, VerificationResult
 from ..config import get_config, Config
 from .models.base import BaseModel
 from .models.transformer import get_model
+from .models.pii_transformer import get_pii_model, PIITransformerModel
 from .models.presidio_detector import PresidioDetector, get_presidio_detector
 from .rules.engine import RuleEngine
 from ..verification.verifier import Verifier, get_verifier
-from ..allowlist import ALLOWLIST, is_allowed
+from ..allowlist import is_allowed
 
 logger = logging.getLogger(__name__)
 
 
-# Filter ALL OTHER type entities
-# OTHER means "I detected something but can't classify it" - not actionable for PHI/PII
+# Filter all OTHER type entities - not actionable for redaction
 FILTER_ALL_OTHER = True
+
+
+@dataclass
+class SpanSignals:
+    """
+    All detection signals for a single span.
+    
+    This is the feature vector for the meta-classifier.
+    Each span gets one of these, capturing what every detector said.
+    """
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    
+    # Span info
+    span_start: int = 0
+    span_end: int = 0
+    span_text: str = ""
+    
+    # Stanford PHI BERT signals
+    phi_bert_detected: bool = False
+    phi_bert_conf: float = 0.0
+    phi_bert_type: str = ""
+    
+    # PII BERT signals (AI4Privacy trained)
+    pii_bert_detected: bool = False
+    pii_bert_conf: float = 0.0
+    pii_bert_type: str = ""
+    
+    # Presidio signals
+    presidio_detected: bool = False
+    presidio_conf: float = 0.0
+    presidio_type: str = ""
+    
+    # Rules signals
+    rule_detected: bool = False
+    rule_conf: float = 0.0
+    rule_type: str = ""
+    rule_has_checksum: bool = False
+    
+    # Ollama/LLM signals
+    llm_verified: bool = False
+    llm_decision: str = ""  # yes/no/uncertain
+    llm_conf: float = 0.0
+    
+    # Computed features
+    sources_agree_count: int = 0
+    span_length: int = 0
+    has_digits: bool = False
+    has_letters: bool = False
+    all_caps: bool = False
+    all_digits: bool = False
+    mixed_case: bool = False
+    
+    # Current classifier output (rule-based merge)
+    merged_type: str = ""
+    merged_conf: float = 0.0
+    merged_source: str = ""
+    
+    # Ground truth (filled by human review or benchmark)
+    ground_truth_type: Optional[str] = None  # None=unknown, "NONE"=not PHI
+    ground_truth_source: Optional[str] = None  # "benchmark", "human"
+    
+    def to_feature_dict(self) -> Dict[str, Any]:
+        """Convert to feature dict for ML model."""
+        return {
+            "phi_bert_detected": int(self.phi_bert_detected),
+            "phi_bert_conf": self.phi_bert_conf,
+            "pii_bert_detected": int(self.pii_bert_detected),
+            "pii_bert_conf": self.pii_bert_conf,
+            "presidio_detected": int(self.presidio_detected),
+            "presidio_conf": self.presidio_conf,
+            "rule_detected": int(self.rule_detected),
+            "rule_conf": self.rule_conf,
+            "rule_has_checksum": int(self.rule_has_checksum),
+            "llm_verified": int(self.llm_verified),
+            "llm_conf": self.llm_conf,
+            "sources_agree_count": self.sources_agree_count,
+            "span_length": self.span_length,
+            "has_digits": int(self.has_digits),
+            "has_letters": int(self.has_letters),
+            "all_caps": int(self.all_caps),
+            "all_digits": int(self.all_digits),
+            "mixed_case": int(self.mixed_case),
+        }
 
 
 class ClassificationEngine:
@@ -25,24 +110,40 @@ class ClassificationEngine:
     Main PHI/PII classification engine.
     
     Defense-in-depth approach combining:
-    - Transformer model (Stanford de-identifier) → PHI-specific
-    - Presidio (Microsoft PII detector) → General PII (backs up PHI since most PHI contains PII)
-    - Rule-based detection (regex patterns) → Known formats
-    - LLM verification (for uncertain cases) → Human-like judgment
+    - Stanford transformer (PHI-specific, clinical)
+    - PII BERT (trained on AI4Privacy, general PII)
+    - Presidio (Microsoft PII detector)
+    - Rule-based detection (regex + validation)
+    - LLM verification (for uncertain cases)
+    
+    Signal capture mode stores all detector outputs for meta-classifier training.
     """
     
     def __init__(
         self,
-        model: Optional[BaseModel] = None,
+        phi_model: Optional[BaseModel] = None,
+        pii_model: Optional[PIITransformerModel] = None,
         presidio: Optional[PresidioDetector] = None,
         rules: Optional[RuleEngine] = None,
         verifier: Optional[Verifier] = None,
         config: Optional[Config] = None,
         use_mock_model: bool = False,
+        capture_signals: bool = False,
     ):
         self.config = config or get_config()
-        self.model = model or get_model(use_mock=use_mock_model)
+        
+        # Stanford PHI model
+        self.phi_model = phi_model or get_model(use_mock=use_mock_model)
+        
+        # PII BERT model (may not be available)
+        self.pii_model = pii_model
+        if self.pii_model is None:
+            self.pii_model = get_pii_model()
+        
+        # Rules engine
         self.rules = rules or RuleEngine()
+        
+        # LLM verifier
         self.verifier = verifier or get_verifier()
         
         # Initialize Presidio if enabled
@@ -52,146 +153,92 @@ class ClassificationEngine:
                 score_threshold=self.config.presidio.score_threshold
             )
         
-        # Allowlist - start with baseline, can add custom terms
-        self.allowlist: Set[str] = ALLOWLIST.copy()
-        
-        # Blocklist - known PHI terms (force detection)
-        self.blocklist: Set[str] = set()
+        # Signal capture for meta-classifier training
+        self.capture_signals = capture_signals
+        self.captured_signals: List[SpanSignals] = []
     
     def detect(
         self, 
         text: str, 
         verify: bool = True,
-        threshold: Optional[float] = None
+        threshold: Optional[float] = None,
     ) -> List[Entity]:
         """
         Detect PHI/PII entities in text.
         
-        Defense-in-depth pipeline:
-        1. Run transformer model (PHI-specific)
-        2. Run Presidio (general PII - backs up PHI since most PHI has PII)
-        3. Run rule-based detection (known formats)
-        4. Merge all detections (boost confidence when sources agree)
-        5. Apply allowlist/blocklist
-        6. Run LLM verification on uncertain entities
-        
         Args:
             text: Input text to scan
-            verify: Whether to run LLM verification on uncertain entities
-            threshold: Confidence threshold for verification (default from config)
+            verify: Whether to run LLM verification
+            threshold: Confidence threshold for verification
             
         Returns:
             List of detected entities
         """
-        # Handle None, empty, or whitespace-only input
-        if not text or not text.strip():
-            return []
-        
         if threshold is None:
             threshold = self.config.confidence_threshold
         
-        # Run transformer model (PHI-specific)
-        model_entities = self._run_model(text)
-        
-        # Run Presidio PII detection (defense in depth)
+        # Run all detectors
+        phi_entities = self._run_phi_model(text)
+        pii_entities = self._run_pii_model(text)
         presidio_entities = self._run_presidio(text)
-        
-        # Run rule-based detection
         rule_entities = self._run_rules(text)
         
-        # Merge all detections
-        entities = self._merge_entities(model_entities, presidio_entities, rule_entities)
+        # Merge all detections (captures signals if enabled)
+        entities = self._merge_entities(
+            text, phi_entities, pii_entities, presidio_entities, rule_entities
+        )
         
-        # Apply allowlist/blocklist
-        entities = self._apply_lists(entities)
-        
-        # Validate entity spans (catch any bugs in detectors)
-        entities = self._validate_spans(entities, text)
+        # Apply allowlist
+        entities = self._apply_allowlist(entities)
         
         # Run LLM verification on uncertain entities
-        if verify and self.verifier.is_available():
+        if verify and self.verifier and self.verifier.is_available():
             entities = self._verify_uncertain(entities, text, threshold)
         
         return entities
     
-    def _validate_spans(self, entities: List[Entity], text: str) -> List[Entity]:
-        """
-        Validate entity spans are within text bounds and non-empty.
+    def _run_phi_model(self, text: str) -> List[Entity]:
+        """Run Stanford PHI model."""
+        if not self.phi_model:
+            return []
         
-        Catches bugs in detectors that might return invalid spans.
-        """
-        valid = []
-        text_len = len(text)
-        
-        for entity in entities:
-            # Check bounds
-            if entity.start < 0 or entity.end > text_len:
-                logger.warning(
-                    f"Invalid span [{entity.start}:{entity.end}] for text length {text_len}, "
-                    f"dropping entity: {entity.text!r}"
-                )
-                continue
-            
-            # Check non-empty
-            if entity.start >= entity.end:
-                logger.warning(
-                    f"Empty span [{entity.start}:{entity.end}], dropping entity: {entity.text!r}"
-                )
-                continue
-            
-            # Verify text matches span
-            actual_text = text[entity.start:entity.end]
-            if actual_text != entity.text:
-                logger.warning(
-                    f"Text mismatch: entity.text={entity.text!r} but span text={actual_text!r}, "
-                    f"correcting"
-                )
-                entity.text = actual_text
-            
-            valid.append(entity)
-        
-        return valid
-    
-    def _run_model(self, text: str) -> List[Entity]:
-        """
-        Run transformer model detection (PHI-specific).
-        
-        Filters out OTHER type - "I see something but can't classify it" is not actionable.
-        """
         try:
-            entities = self.model.detect(text)
-            
-            # Filter OTHER type - these are low-value detections
+            entities = self.phi_model.detect(text)
+            # Filter OTHER if configured
             if FILTER_ALL_OTHER:
-                filtered = []
-                for e in entities:
-                    if e.entity_type == EntityType.OTHER:
-                        logger.debug(f"Filtering OTHER type: {e.text!r} ({e.confidence:.2f})")
-                    else:
-                        filtered.append(e)
-                return filtered
-            
+                entities = [e for e in entities if e.entity_type != EntityType.OTHER]
             return entities
-            
         except Exception as e:
-            logger.error(f"Model detection failed: {e}")
+            logger.error(f"PHI model failed: {e}")
+            return []
+    
+    def _run_pii_model(self, text: str) -> List[Entity]:
+        """Run PII BERT model."""
+        if not self.pii_model or not self.pii_model.is_available():
+            return []
+        
+        try:
+            entities = self.pii_model.detect(text)
+            # Mark source as PII_MODEL to distinguish from PHI model
+            for e in entities:
+                e.source = SourceType.MODEL  # Could add PII_MODEL to SourceType
+            return entities
+        except Exception as e:
+            logger.error(f"PII model failed: {e}")
             return []
     
     def _run_presidio(self, text: str) -> List[Entity]:
-        """Run Presidio PII detection (defense in depth for general PII)."""
-        if self.presidio is None:
+        """Run Presidio PII detection."""
+        if not self.presidio:
             return []
         
         try:
-            # Presidio has its own internal allow list, we filter again in _apply_lists
             entities = self.presidio.detect(text)
-            
-            # Tag source as PRESIDIO
-            for entity in entities:
-                entity.source = SourceType.PRESIDIO
+            if FILTER_ALL_OTHER:
+                entities = [e for e in entities if e.entity_type != EntityType.OTHER]
             return entities
         except Exception as e:
-            logger.error(f"Presidio detection failed: {e}")
+            logger.error(f"Presidio failed: {e}")
             return []
     
     def _run_rules(self, text: str) -> List[Entity]:
@@ -199,23 +246,40 @@ class ClassificationEngine:
         try:
             return self.rules.detect(text)
         except Exception as e:
-            logger.error(f"Rule detection failed: {e}")
+            logger.error(f"Rules failed: {e}")
             return []
     
     def _merge_entities(
-        self, 
-        model_entities: List[Entity], 
+        self,
+        text: str,
+        phi_entities: List[Entity],
+        pii_entities: List[Entity],
         presidio_entities: List[Entity],
-        rule_entities: List[Entity]
+        rule_entities: List[Entity],
     ) -> List[Entity]:
         """
-        Merge entities from different sources.
+        Merge entities from all sources using tiered authority model.
         
-        Strategy:
-        - Overlapping entities: use tiered authority model
-        - Boost confidence when multiple sources agree
+        If capture_signals is enabled, stores all signals for each span.
         """
-        all_entities = model_entities + presidio_entities + rule_entities
+        # Collect all entities with source tags
+        all_entities = []
+        
+        for e in phi_entities:
+            e._detector = "phi_bert"
+            all_entities.append(e)
+        
+        for e in pii_entities:
+            e._detector = "pii_bert"
+            all_entities.append(e)
+        
+        for e in presidio_entities:
+            e._detector = "presidio"
+            all_entities.append(e)
+        
+        for e in rule_entities:
+            e._detector = "rule"
+            all_entities.append(e)
         
         if not all_entities:
             return []
@@ -235,215 +299,231 @@ class ClassificationEngine:
             
             while j < len(all_entities):
                 next_entity = all_entities[j]
-                
-                # Check for overlap
                 if next_entity.start < current.end:
                     overlapping.append(next_entity)
+                    # Extend current span if next entity extends beyond
+                    if next_entity.end > current.end:
+                        current = Entity(
+                            text=text[current.start:next_entity.end],
+                            start=current.start,
+                            end=next_entity.end,
+                            entity_type=current.entity_type,
+                            confidence=current.confidence,
+                            source=current.source,
+                        )
+                        current._detector = overlapping[0]._detector
                     j += 1
                 else:
                     break
             
             # Merge overlapping entities
-            if len(overlapping) == 1:
-                merged.append(current)
-            else:
-                merged.append(self._merge_overlapping(overlapping))
+            result = self._merge_overlapping(overlapping, text)
+            merged.append(result)
+            
+            # Capture signals if enabled
+            if self.capture_signals:
+                signals = self._build_signals(overlapping, result, text)
+                self.captured_signals.append(signals)
             
             i = j
         
         return merged
     
-    def _merge_overlapping(self, entities: List[Entity]) -> Entity:
+    def _build_signals(
+        self, 
+        overlapping: List[Entity], 
+        result: Entity,
+        text: str,
+    ) -> SpanSignals:
+        """Build signal vector from overlapping entities."""
+        signals = SpanSignals(
+            span_start=result.start,
+            span_end=result.end,
+            span_text=result.text,
+        )
+        
+        # Extract signals from each detector
+        for e in overlapping:
+            detector = getattr(e, "_detector", "unknown")
+            etype = e.entity_type.value if hasattr(e.entity_type, "value") else str(e.entity_type)
+            
+            if detector == "phi_bert":
+                signals.phi_bert_detected = True
+                signals.phi_bert_conf = max(signals.phi_bert_conf, e.confidence)
+                signals.phi_bert_type = etype
+            elif detector == "pii_bert":
+                signals.pii_bert_detected = True
+                signals.pii_bert_conf = max(signals.pii_bert_conf, e.confidence)
+                signals.pii_bert_type = etype
+            elif detector == "presidio":
+                signals.presidio_detected = True
+                signals.presidio_conf = max(signals.presidio_conf, e.confidence)
+                signals.presidio_type = etype
+            elif detector == "rule":
+                signals.rule_detected = True
+                signals.rule_conf = max(signals.rule_conf, e.confidence)
+                signals.rule_type = etype
+                # High confidence rules typically have checksum validation
+                signals.rule_has_checksum = e.confidence >= 0.95
+        
+        # Computed features
+        detectors = set(getattr(e, "_detector", "") for e in overlapping)
+        signals.sources_agree_count = len(detectors)
+        signals.span_length = len(result.text)
+        signals.has_digits = any(c.isdigit() for c in result.text)
+        signals.has_letters = any(c.isalpha() for c in result.text)
+        signals.all_caps = result.text.isupper() and signals.has_letters
+        signals.all_digits = result.text.replace("-", "").replace(" ", "").isdigit()
+        signals.mixed_case = (
+            any(c.isupper() for c in result.text) and 
+            any(c.islower() for c in result.text)
+        )
+        
+        # Current merge output
+        signals.merged_type = result.entity_type.value if hasattr(result.entity_type, "value") else str(result.entity_type)
+        signals.merged_conf = result.confidence
+        signals.merged_source = result.source.value if hasattr(result.source, "value") else str(result.source)
+        
+        return signals
+    
+    def _merge_overlapping(self, entities: List[Entity], text: str) -> Entity:
         """
         Merge overlapping entities using tiered authority model.
         
-        Industry-standard approach (Varonis, etc.):
-        - Tier 1: Rule-based with validation (Luhn, checksum) → highest authority
-        - Tier 2: Presidio (pattern + context) → high authority
-        - Tier 3: Transformer → detection signal, type is advisory
-        
-        Key insight: Rules/patterns TYPE entities, ML FINDS entities.
-        Don't let ML override a validated pattern match.
+        Tier 1: Rules (algorithmic validation) → highest authority
+        Tier 2: Presidio (pattern + context)
+        Tier 3: PII BERT (learned on AI4Privacy)
+        Tier 4: PHI BERT (Stanford, clinical focus)
         """
-        sources = set(e.source for e in entities)
+        sources = set(getattr(e, "_detector", e.source) for e in entities)
         n_sources = len(sources)
         
         # Tier 1: Rules with high confidence always win
-        # These are algorithmic (Luhn, regex with validation) - most precise
-        rules = [e for e in entities if e.source == SourceType.RULE]
+        rules = [e for e in entities if getattr(e, "_detector", "") == "rule"]
         if rules:
-            best_rule = max(rules, key=lambda e: e.confidence)
-            # Boost if other sources also detected something here
-            confidence = best_rule.confidence
+            best = max(rules, key=lambda e: e.confidence)
+            confidence = best.confidence
             if n_sources > 1:
                 confidence = min(0.99, confidence + 0.05)
             return Entity(
-                text=best_rule.text,
-                start=best_rule.start,
-                end=best_rule.end,
-                entity_type=best_rule.entity_type,
+                text=best.text,
+                start=best.start,
+                end=best.end,
+                entity_type=best.entity_type,
                 confidence=confidence,
                 source=SourceType.MERGED if n_sources > 1 else SourceType.RULE,
             )
         
-        # Tier 2: Presidio (pattern + context keywords)
-        presidio = [e for e in entities if e.source == SourceType.PRESIDIO]
+        # Tier 2: Presidio
+        presidio = [e for e in entities if getattr(e, "_detector", "") == "presidio"]
         if presidio:
-            best_presidio = max(presidio, key=lambda e: e.confidence)
-            confidence = best_presidio.confidence
-            # Boost if transformer also detected something here
-            if any(e.source == SourceType.MODEL for e in entities):
+            best = max(presidio, key=lambda e: e.confidence)
+            confidence = best.confidence
+            if n_sources > 1:
                 confidence = min(0.99, confidence + 0.05)
             return Entity(
-                text=best_presidio.text,
-                start=best_presidio.start,
-                end=best_presidio.end,
-                entity_type=best_presidio.entity_type,
+                text=best.text,
+                start=best.start,
+                end=best.end,
+                entity_type=best.entity_type,
                 confidence=confidence,
                 source=SourceType.MERGED if n_sources > 1 else SourceType.PRESIDIO,
             )
         
-        # Tier 3: Transformer - prefer specific types over OTHER
-        # OTHER means "I see something but don't know what" - not authoritative for typing
-        model = [e for e in entities if e.source == SourceType.MODEL]
-        if model:
-            specific = [e for e in model if e.entity_type != EntityType.OTHER]
-            if specific:
-                best = max(specific, key=lambda e: e.confidence)
-            else:
-                best = max(model, key=lambda e: e.confidence)
+        # Tier 3: PII BERT (more entity types than PHI BERT)
+        pii = [e for e in entities if getattr(e, "_detector", "") == "pii_bert"]
+        if pii:
+            specific = [e for e in pii if e.entity_type != EntityType.OTHER]
+            best = max(specific or pii, key=lambda e: e.confidence)
+            confidence = best.confidence
+            if n_sources > 1:
+                confidence = min(0.99, confidence + 0.05)
+            return Entity(
+                text=best.text,
+                start=best.start,
+                end=best.end,
+                entity_type=best.entity_type,
+                confidence=confidence,
+                source=SourceType.MERGED if n_sources > 1 else SourceType.MODEL,
+            )
+        
+        # Tier 4: PHI BERT (Stanford)
+        phi = [e for e in entities if getattr(e, "_detector", "") == "phi_bert"]
+        if phi:
+            specific = [e for e in phi if e.entity_type != EntityType.OTHER]
+            best = max(specific or phi, key=lambda e: e.confidence)
             return Entity(
                 text=best.text,
                 start=best.start,
                 end=best.end,
                 entity_type=best.entity_type,
                 confidence=best.confidence,
-                source=best.source,
+                source=SourceType.MODEL,
             )
         
-        # Fallback: highest confidence from whatever we have
+        # Fallback - shouldn't happen
         best = max(entities, key=lambda e: e.confidence)
-        return Entity(
-            text=best.text,
-            start=best.start,
-            end=best.end,
-            entity_type=best.entity_type,
-            confidence=best.confidence,
-            source=SourceType.MERGED if n_sources > 1 else best.source,
-        )
+        return best
     
-    def _apply_lists(self, entities: List[Entity]) -> List[Entity]:
-        """Apply allowlist, blocklist, and filter OTHER type."""
-        result = []
-        
-        for entity in entities:
-            # Filter OTHER type from ALL sources - not actionable
-            if FILTER_ALL_OTHER and entity.entity_type == EntityType.OTHER:
-                logger.debug(f"Filtering OTHER type: {entity.text!r} (source: {entity.source})")
-                continue
-            
-            text_lower = entity.text.lower().strip()
-            
-            # Skip if in allowlist
-            if text_lower in self.allowlist or is_allowed(entity.text):
-                logger.debug(f"Allowlist filtered: {entity.text!r}")
-                continue
-            
-            # Boost if in blocklist
-            if text_lower in self.blocklist:
-                entity.confidence = 0.99
-            
-            result.append(entity)
-        
-        return result
+    def _apply_allowlist(self, entities: List[Entity]) -> List[Entity]:
+        """Filter out allowlisted terms."""
+        return [e for e in entities if not is_allowed(e.text)]
     
     def _verify_uncertain(
         self, 
         entities: List[Entity], 
-        text: str,
-        threshold: float
+        text: str, 
+        threshold: float,
     ) -> List[Entity]:
-        """Run LLM verification on entities below threshold."""
-        context_window = self.config.context_window
+        """Run LLM verification on uncertain entities."""
+        verified = []
         
         for entity in entities:
             if entity.confidence >= threshold:
-                continue
-            
-            # Get context
-            start = max(0, entity.start - context_window)
-            end = min(len(text), entity.end + context_window)
-            context = text[start:end]
-            
-            # Verify with LLM
-            response = self.verifier.verify(
-                entity_text=entity.text,
-                entity_type=entity.entity_type,
-                context=context
-            )
-            
-            # Update entity with LLM results
-            entity.llm_reasoning = response.reasoning
-            
-            if response.decision == VerificationResult.YES:
-                # LLM confirms PHI - boost confidence
-                entity.llm_confidence = response.confidence
-            elif response.decision == VerificationResult.NO:
-                # LLM says not PHI - lower confidence
-                entity.llm_confidence = 1.0 - response.confidence
+                verified.append(entity)
             else:
-                # Uncertain
-                entity.llm_confidence = 0.5
+                result = self.verifier.verify(entity, text)
+                if result.decision == VerificationResult.YES:
+                    entity.llm_confidence = result.confidence
+                    entity.llm_reasoning = result.reasoning
+                    verified.append(entity)
+                elif result.decision == VerificationResult.UNCERTAIN:
+                    entity.llm_confidence = result.confidence
+                    entity.llm_reasoning = result.reasoning
+                    verified.append(entity)
+                # If NO, entity is dropped
         
-        return entities
+        return verified
     
-    def add_to_allowlist(self, term: str):
-        """Add term to allowlist (not PHI)."""
-        self.allowlist.add(term.lower().strip())
+    def get_captured_signals(self) -> List[SpanSignals]:
+        """Get captured signals for meta-classifier training."""
+        return self.captured_signals
     
-    def add_to_blocklist(self, term: str):
-        """Add term to blocklist (always PHI)."""
-        self.blocklist.add(term.lower().strip())
+    def clear_captured_signals(self):
+        """Clear captured signals."""
+        self.captured_signals = []
     
-    def get_context(self, text: str, start: int, end: int) -> Tuple[str, str]:
-        """Get context before and after an entity."""
-        window = self.config.context_window
-        
-        context_before = text[max(0, start - window):start]
-        context_after = text[end:min(len(text), end + window)]
-        
-        return context_before, context_after
-    
-    def get_stack_status(self) -> dict:
-        """
-        Get status of all detection components in the stack.
-        
-        Useful for diagnostics and understanding which layers are active.
-        """
-        status = {
-            "transformer": {
-                "name": self.model.name if hasattr(self.model, 'name') else "unknown",
-                "available": True,  # If we got here, model loaded successfully
-                "other_filter": "all" if FILTER_ALL_OTHER else "none",
+    def get_stack_status(self) -> Dict[str, Any]:
+        """Get status of all detection components."""
+        return {
+            "phi_bert": {
+                "name": self.phi_model.name if self.phi_model else None,
+                "available": self.phi_model.is_available() if self.phi_model else False,
+            },
+            "pii_bert": {
+                "name": self.pii_model.name if self.pii_model else None,
+                "available": self.pii_model.is_available() if self.pii_model else False,
             },
             "presidio": {
                 "enabled": self.presidio is not None,
                 "available": self.presidio.is_available() if self.presidio else False,
-                "error": self.presidio.load_error if self.presidio and hasattr(self.presidio, 'load_error') else None,
             },
             "rules": {
-                "enabled": self.rules is not None,
-                "rule_count": len(self.rules.rules) if hasattr(self.rules, 'rules') else 0,
+                "enabled": True,
+                "rule_count": len(self.rules.rules) if self.rules else 0,
             },
             "verifier": {
-                "provider": self.config.verification.provider,
+                "provider": getattr(self.verifier, "provider", "unknown") if self.verifier else None,
                 "available": self.verifier.is_available() if self.verifier else False,
             },
-            "allowlist": {
-                "count": len(self.allowlist),
-            },
-            "blocklist": {
-                "count": len(self.blocklist),
-            },
         }
-        return status
