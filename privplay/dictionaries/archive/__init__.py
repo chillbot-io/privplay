@@ -2,15 +2,21 @@
 
 from .loader import (
     load_payers,
-    load_drugs,
-    load_diagnoses,
     load_lab_tests,
-    load_facilities,
-    load_hospitals,  # Alias for backwards compatibility
+    load_drugs,
+    load_hospitals,
     load_all_dictionaries,
     register_with_presidio,
     DictionaryDetector,
     get_dictionary_status,
+)
+
+from .downloader import (
+    download_fda_drugs,
+    download_cms_hospitals,
+    download_npi_database,
+    download_all,
+    get_download_status,
 )
 
 from .npi import (
@@ -23,17 +29,21 @@ from .npi import (
 )
 
 __all__ = [
-    # Loader - Dictionary functions
+    # Loader
     "load_payers",
+    "load_lab_tests", 
     "load_drugs",
-    "load_diagnoses",
-    "load_lab_tests",
-    "load_facilities",
-    "load_hospitals",  # Alias for load_facilities
+    "load_hospitals",
     "load_all_dictionaries",
     "register_with_presidio",
     "DictionaryDetector",
     "get_dictionary_status",
+    # Downloader
+    "download_fda_drugs",
+    "download_cms_hospitals",
+    "download_npi_database",
+    "download_all",
+    "get_download_status",
     # NPI
     "lookup_npi",
     "search_npi_by_name",

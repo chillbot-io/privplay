@@ -116,7 +116,7 @@ AI4PRIVACY_MAPPING = {
     
     # Medical / Health
     "MEDICALRECORD": "MRN",
-    "HEALTHPLAN": "ACCOUNT_NUMBER",
+    "HEALTHPLAN": "HEALTH_PLAN",
     "BLOOD_TYPE": "OTHER",
     "HEIGHT": "OTHER",
     "WEIGHT": "OTHER",
@@ -266,38 +266,43 @@ def _parse_bio_tags(
     """Parse BIO-tagged tokens into entities."""
     entities = []
     current_entity = None
-    current_start = 0
     position = 0
     
-    for i, (token, tag_id) in enumerate(zip(tokens, tags)):
-        tag = label_names[tag_id] if tag_id < len(label_names) else "O"
+    for i, (token, tag) in enumerate(zip(tokens, tags)):
+        # Get label name
+        if tag < len(label_names):
+            label = label_names[tag]
+        else:
+            label = f"LABEL_{tag}"
         
-        if tag.startswith("B-"):
+        # Handle BIO tags
+        if label.startswith("B-"):
             # Save previous entity
             if current_entity:
                 entities.append(current_entity)
             
             # Start new entity
-            label = tag[2:]
+            entity_type = label[2:]
             current_entity = AnnotatedEntity(
                 text=token,
                 start=position,
                 end=position + len(token),
-                entity_type=label,
-                normalized_type=_normalize_label(label),
+                entity_type=entity_type,
+                normalized_type=_normalize_label(entity_type),
             )
-        elif tag.startswith("I-") and current_entity:
+        elif label.startswith("I-") and current_entity:
             # Continue current entity
             current_entity.text += " " + token
             current_entity.end = position + len(token)
         else:
-            # End current entity
+            # O tag or mismatch - save current entity
             if current_entity:
                 entities.append(current_entity)
                 current_entity = None
         
         position += len(token) + 1  # +1 for space
     
+    # Don't forget last entity
     if current_entity:
         entities.append(current_entity)
     
@@ -309,80 +314,74 @@ def _parse_privacy_mask(text: str, privacy_mask: List[Dict]) -> List[AnnotatedEn
     entities = []
     
     for mask in privacy_mask:
-        label = mask.get("label", mask.get("type", "OTHER"))
+        entity_type = mask.get("label", mask.get("type", "OTHER"))
         start = mask.get("start", 0)
         end = mask.get("end", 0)
-        entity_text = mask.get("value", text[start:end] if start < end <= len(text) else "")
         
         entities.append(AnnotatedEntity(
-            text=entity_text,
+            text=text[start:end],
             start=start,
             end=end,
-            entity_type=label,
-            normalized_type=_normalize_label(label),
+            entity_type=entity_type,
+            normalized_type=_normalize_label(entity_type),
         ))
     
     return entities
 
 
-def _parse_spans(text: str, spans: List) -> List[AnnotatedEntity]:
+def _parse_spans(text: str, spans: List[Dict]) -> List[AnnotatedEntity]:
     """Parse span annotations."""
     entities = []
     
     for span in spans:
-        if isinstance(span, dict):
-            label = span.get("label", span.get("type", "OTHER"))
-            start = span.get("start", 0)
-            end = span.get("end", 0)
-        elif isinstance(span, (list, tuple)) and len(span) >= 3:
-            start, end, label = span[0], span[1], span[2]
-        else:
-            continue
-        
-        entity_text = text[start:end] if start < end <= len(text) else ""
+        entity_type = span.get("label", span.get("type", "OTHER"))
+        start = span.get("start", span.get("begin", 0))
+        end = span.get("end", 0)
         
         entities.append(AnnotatedEntity(
-            text=entity_text,
+            text=text[start:end],
             start=start,
             end=end,
-            entity_type=label,
-            normalized_type=_normalize_label(label),
+            entity_type=entity_type,
+            normalized_type=_normalize_label(entity_type),
         ))
     
     return entities
 
 
 def load_synthetic_phi_dataset(
-    num_samples: int = 500,
+    num_samples: int = 100,
     seed: int = 42,
 ) -> BenchmarkDataset:
     """
-    Generate synthetic PHI dataset for clinical text benchmarking.
+    Generate synthetic clinical documents with ground-truth PHI.
     
-    Uses Faker to generate realistic clinical notes with known PHI.
-    This provides a ground-truth dataset for testing detection accuracy.
+    This creates realistic clinical notes using Faker with known
+    PHI locations for testing detection accuracy.
     
     Args:
         num_samples: Number of samples to generate
         seed: Random seed for reproducibility
         
     Returns:
-        BenchmarkDataset with synthetic clinical samples
+        BenchmarkDataset with generated samples
     """
-    from faker import Faker
-    import random
-    
-    random.seed(seed)
-    fake = Faker()
-    Faker.seed(seed)
+    try:
+        from faker import Faker
+    except ImportError:
+        raise ImportError(
+            "faker library required. Install with: pip install faker"
+        )
     
     logger.info(f"Generating {num_samples} synthetic PHI samples...")
+    
+    fake = Faker()
+    Faker.seed(seed)
     
     samples = []
     entity_types_seen = set()
     
-    templates = [
-        _generate_discharge_summary,
+    generators = [
         _generate_clinical_note,
         _generate_lab_report,
         _generate_radiology_report,
@@ -390,33 +389,34 @@ def load_synthetic_phi_dataset(
     ]
     
     for i in range(num_samples):
-        template_fn = random.choice(templates)
-        text, entities = template_fn(fake, i)
+        # Rotate through generators
+        generator = generators[i % len(generators)]
+        text, entities = generator(fake, i)
         
+        # Track entity types
         for e in entities:
             entity_types_seen.add(e.normalized_type)
         
         samples.append(BenchmarkSample(
-            id=f"synthetic_phi_{i:05d}",
+            id=f"synthetic_{i:05d}",
             text=text,
             entities=entities,
             source="synthetic_phi",
-            metadata={"template": template_fn.__name__, "seed": seed},
+            metadata={"generator": generator.__name__},
         ))
     
     logger.info(f"Generated {len(samples)} samples with {len(entity_types_seen)} entity types")
     
     return BenchmarkDataset(
-        name="Synthetic PHI Clinical Notes",
-        description="Synthetically generated clinical notes with ground-truth PHI annotations",
+        name="Synthetic PHI Dataset",
+        description="Synthetically generated clinical notes with ground-truth PHI",
         samples=samples,
         entity_types=sorted(entity_types_seen),
-        source_url=None,
     )
 
 
-def _generate_discharge_summary(fake: 'Faker', idx: int) -> tuple:
-    """Generate a synthetic discharge summary."""
+def _generate_clinical_note(fake: 'Faker', idx: int) -> tuple:
+    """Generate a synthetic clinical note."""
     entities = []
     parts = []
     position = 0
@@ -439,8 +439,7 @@ def _generate_discharge_summary(fake: 'Faker', idx: int) -> tuple:
             normalized_type=normalized,
         ))
     
-    # Header
-    add_text("DISCHARGE SUMMARY\n\nPatient: ")
+    add_text("CLINICAL NOTE\n\nPatient: ")
     add_entity(fake.name(), "PATIENT_NAME", "NAME_PATIENT")
     add_text("\nMRN: ")
     add_entity(fake.numerify("########"), "MRN", "MRN")
@@ -449,81 +448,21 @@ def _generate_discharge_summary(fake: 'Faker', idx: int) -> tuple:
     add_text("\nSSN: ")
     add_entity(fake.ssn(), "SSN", "SSN")
     
-    add_text("\n\nAdmission Date: ")
-    add_entity(fake.date_this_year().strftime("%m/%d/%Y"), "DATE", "DATE_ADMISSION")
-    add_text("\nDischarge Date: ")
-    add_entity(fake.date_this_year().strftime("%m/%d/%Y"), "DATE", "DATE_DISCHARGE")
-    
-    add_text("\n\nAttending Physician: Dr. ")
-    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PROVIDER")
-    add_text("\nPhone: ")
-    add_entity(fake.phone_number(), "PHONE", "PHONE")
-    add_text("\nFax: ")
-    add_entity(fake.phone_number(), "FAX", "FAX")
-    
-    add_text("\n\nPatient Address:\n")
-    add_entity(fake.street_address(), "ADDRESS", "ADDRESS")
-    add_text("\n")
-    add_entity(f"{fake.city()}, {fake.state_abbr()} {fake.zipcode()}", "ADDRESS", "ADDRESS")
-    
     add_text("\n\nChief Complaint: ")
     add_text(fake.sentence())
     
-    add_text("\n\nHistory of Present Illness:\nPatient is a ")
-    age = fake.random_int(min=25, max=85)
-    add_entity(f"{age}-year-old", "AGE", "AGE")
-    add_text(" ")
-    add_text(fake.random_element(["male", "female"]))
-    add_text(" who presented with ")
-    add_text(fake.sentence())
-    
-    add_text("\n\nContact Email: ")
+    add_text("\n\nHistory: ")
+    add_entity(fake.first_name(), "PATIENT_FIRST", "NAME_PATIENT")
+    add_text(" reports symptoms for the past week. ")
+    add_text("Contact email: ")
     add_entity(fake.email(), "EMAIL", "EMAIL")
+    add_text("\nPhone: ")
+    add_entity(fake.phone_number(), "PHONE", "PHONE")
     
-    add_text("\n\nDischarge Instructions:\n")
-    add_text(fake.paragraph())
+    add_text("\n\nAddress: ")
+    add_entity(fake.address().replace("\n", ", "), "ADDRESS", "ADDRESS")
     
-    return "".join(parts), entities
-
-
-def _generate_clinical_note(fake: 'Faker', idx: int) -> tuple:
-    """Generate a synthetic clinical progress note."""
-    entities = []
-    parts = []
-    position = 0
-    
-    def add_text(text: str):
-        nonlocal position
-        parts.append(text)
-        position += len(text)
-    
-    def add_entity(text: str, entity_type: str, normalized: str):
-        nonlocal position
-        start = position
-        parts.append(text)
-        position += len(text)
-        entities.append(AnnotatedEntity(
-            text=text,
-            start=start,
-            end=position,
-            entity_type=entity_type,
-            normalized_type=normalized,
-        ))
-    
-    add_text("PROGRESS NOTE\n\nDate: ")
-    add_entity(fake.date_this_month().strftime("%m/%d/%Y"), "DATE", "DATE")
-    add_text("\nTime: ")
-    add_text(fake.time())
-    
-    add_text("\n\nPatient: ")
-    add_entity(fake.name(), "PATIENT_NAME", "NAME_PATIENT")
-    add_text(" (MRN: ")
-    add_entity(fake.numerify("########"), "MRN", "MRN")
-    add_text(")")
-    
-    add_text("\n\nSubjective:\nPatient reports ")
-    add_text(fake.sentence())
-    add_text(" Patient's wife ")
+    add_text("\n\nFamily History: Patient's wife ")
     add_entity(fake.first_name_female(), "RELATIVE_NAME", "NAME_RELATIVE")
     add_text(" confirms the symptoms began last week.")
     

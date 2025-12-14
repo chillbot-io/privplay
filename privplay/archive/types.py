@@ -60,13 +60,9 @@ class EntityType(str, Enum):
     
     # Clinical (dictionary-based)
     DRUG = "DRUG"                         # Medication names
-    DIAGNOSIS = "DIAGNOSIS"               # Diagnosis/condition names (ICD-10)
-    LAB_TEST = "LAB_TEST"                 # Laboratory test names (LOINC)
+    LAB_TEST = "LAB_TEST"                 # Laboratory test names
     HEALTH_PLAN = "HEALTH_PLAN"           # Insurance company/payer names
-    FACILITY = "FACILITY"                 # Healthcare facility names
-    
-    # Legacy alias - maps to FACILITY internally
-    HOSPITAL = "HOSPITAL"                 # Deprecated: use FACILITY
+    HOSPITAL = "HOSPITAL"                 # Healthcare facility names
     
     # Special
     OTHER = "OTHER"
@@ -110,11 +106,7 @@ class Entity:
     
     def __post_init__(self):
         if isinstance(self.entity_type, str):
-            # Handle HOSPITAL -> FACILITY mapping
-            if self.entity_type == "HOSPITAL":
-                self.entity_type = EntityType.FACILITY
-            else:
-                self.entity_type = EntityType(self.entity_type)
+            self.entity_type = EntityType(self.entity_type)
         if isinstance(self.source, str):
             self.source = SourceType(self.source)
 

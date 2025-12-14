@@ -10,8 +10,14 @@ from .models.transformer import get_model
 from .models.presidio_detector import PresidioDetector, get_presidio_detector
 from .rules.engine import RuleEngine
 from ..verification.verifier import Verifier, get_verifier
+from ..allowlist import ALLOWLIST, is_allowed
 
 logger = logging.getLogger(__name__)
+
+
+# Filter ALL OTHER type entities
+# OTHER means "I detected something but can't classify it" - not actionable for PHI/PII
+FILTER_ALL_OTHER = True
 
 
 class ClassificationEngine:
@@ -46,8 +52,8 @@ class ClassificationEngine:
                 score_threshold=self.config.presidio.score_threshold
             )
         
-        # Allowlist - known non-PHI terms
-        self.allowlist: Set[str] = set()
+        # Allowlist - start with baseline, can add custom terms
+        self.allowlist: Set[str] = ALLOWLIST.copy()
         
         # Blocklist - known PHI terms (force detection)
         self.blocklist: Set[str] = set()
@@ -77,6 +83,10 @@ class ClassificationEngine:
         Returns:
             List of detected entities
         """
+        # Handle None, empty, or whitespace-only input
+        if not text or not text.strip():
+            return []
+        
         if threshold is None:
             threshold = self.config.confidence_threshold
         
@@ -95,16 +105,74 @@ class ClassificationEngine:
         # Apply allowlist/blocklist
         entities = self._apply_lists(entities)
         
+        # Validate entity spans (catch any bugs in detectors)
+        entities = self._validate_spans(entities, text)
+        
         # Run LLM verification on uncertain entities
         if verify and self.verifier.is_available():
             entities = self._verify_uncertain(entities, text, threshold)
         
         return entities
     
+    def _validate_spans(self, entities: List[Entity], text: str) -> List[Entity]:
+        """
+        Validate entity spans are within text bounds and non-empty.
+        
+        Catches bugs in detectors that might return invalid spans.
+        """
+        valid = []
+        text_len = len(text)
+        
+        for entity in entities:
+            # Check bounds
+            if entity.start < 0 or entity.end > text_len:
+                logger.warning(
+                    f"Invalid span [{entity.start}:{entity.end}] for text length {text_len}, "
+                    f"dropping entity: {entity.text!r}"
+                )
+                continue
+            
+            # Check non-empty
+            if entity.start >= entity.end:
+                logger.warning(
+                    f"Empty span [{entity.start}:{entity.end}], dropping entity: {entity.text!r}"
+                )
+                continue
+            
+            # Verify text matches span
+            actual_text = text[entity.start:entity.end]
+            if actual_text != entity.text:
+                logger.warning(
+                    f"Text mismatch: entity.text={entity.text!r} but span text={actual_text!r}, "
+                    f"correcting"
+                )
+                entity.text = actual_text
+            
+            valid.append(entity)
+        
+        return valid
+    
     def _run_model(self, text: str) -> List[Entity]:
-        """Run transformer model detection (PHI-specific)."""
+        """
+        Run transformer model detection (PHI-specific).
+        
+        Filters out OTHER type - "I see something but can't classify it" is not actionable.
+        """
         try:
-            return self.model.detect(text)
+            entities = self.model.detect(text)
+            
+            # Filter OTHER type - these are low-value detections
+            if FILTER_ALL_OTHER:
+                filtered = []
+                for e in entities:
+                    if e.entity_type == EntityType.OTHER:
+                        logger.debug(f"Filtering OTHER type: {e.text!r} ({e.confidence:.2f})")
+                    else:
+                        filtered.append(e)
+                return filtered
+            
+            return entities
+            
         except Exception as e:
             logger.error(f"Model detection failed: {e}")
             return []
@@ -115,7 +183,9 @@ class ClassificationEngine:
             return []
         
         try:
+            # Presidio has its own internal allow list, we filter again in _apply_lists
             entities = self.presidio.detect(text)
+            
             # Tag source as PRESIDIO
             for entity in entities:
                 entity.source = SourceType.PRESIDIO
@@ -263,14 +333,20 @@ class ClassificationEngine:
         )
     
     def _apply_lists(self, entities: List[Entity]) -> List[Entity]:
-        """Apply allowlist and blocklist."""
+        """Apply allowlist, blocklist, and filter OTHER type."""
         result = []
         
         for entity in entities:
-            text_lower = entity.text.lower()
+            # Filter OTHER type from ALL sources - not actionable
+            if FILTER_ALL_OTHER and entity.entity_type == EntityType.OTHER:
+                logger.debug(f"Filtering OTHER type: {entity.text!r} (source: {entity.source})")
+                continue
+            
+            text_lower = entity.text.lower().strip()
             
             # Skip if in allowlist
-            if text_lower in self.allowlist:
+            if text_lower in self.allowlist or is_allowed(entity.text):
+                logger.debug(f"Allowlist filtered: {entity.text!r}")
                 continue
             
             # Boost if in blocklist
@@ -323,11 +399,11 @@ class ClassificationEngine:
     
     def add_to_allowlist(self, term: str):
         """Add term to allowlist (not PHI)."""
-        self.allowlist.add(term.lower())
+        self.allowlist.add(term.lower().strip())
     
     def add_to_blocklist(self, term: str):
         """Add term to blocklist (always PHI)."""
-        self.blocklist.add(term.lower())
+        self.blocklist.add(term.lower().strip())
     
     def get_context(self, text: str, start: int, end: int) -> Tuple[str, str]:
         """Get context before and after an entity."""
@@ -348,6 +424,7 @@ class ClassificationEngine:
             "transformer": {
                 "name": self.model.name if hasattr(self.model, 'name') else "unknown",
                 "available": True,  # If we got here, model loaded successfully
+                "other_filter": "all" if FILTER_ALL_OTHER else "none",
             },
             "presidio": {
                 "enabled": self.presidio is not None,
@@ -361,6 +438,12 @@ class ClassificationEngine:
             "verifier": {
                 "provider": self.config.verification.provider,
                 "available": self.verifier.is_available() if self.verifier else False,
+            },
+            "allowlist": {
+                "count": len(self.allowlist),
+            },
+            "blocklist": {
+                "count": len(self.blocklist),
             },
         }
         return status

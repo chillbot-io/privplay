@@ -20,6 +20,61 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+# =============================================================================
+# TYPE COMPATIBILITY GROUPS
+# =============================================================================
+# These groups define which entity types should be considered "equivalent"
+# when comparing detected entities to ground truth. This prevents artificial
+# FP/FN counts from slight type variations (e.g., NAME_PERSON vs NAME_PATIENT).
+
+TYPE_COMPATIBILITY_GROUPS = [
+    # Name types - all represent a person's name
+    {"NAME_PERSON", "NAME_PATIENT", "NAME_PROVIDER", "NAME_RELATIVE"},
+    
+    # Date types - all represent dates
+    {"DATE", "DATE_DOB", "DATE_ADMISSION", "DATE_DISCHARGE"},
+    
+    # Address/location types
+    {"ADDRESS", "ZIP", "LOCATION"},
+    
+    # Account/ID types
+    {"ACCOUNT_NUMBER", "BANK_ACCOUNT", "MRN", "HEALTH_PLAN_ID"},
+    
+    # Healthcare facility types
+    {"FACILITY", "HOSPITAL"},
+    
+    # Insurance/payer types
+    {"HEALTH_PLAN", "HEALTH_PLAN_ID"},
+    
+    # Device identifiers
+    {"DEVICE_ID", "VIN", "UDI", "MAC_ADDRESS"},
+    
+    # Phone/fax (both are phone numbers)
+    {"PHONE", "FAX"},
+]
+
+
+def types_are_compatible(type1: str, type2: str) -> bool:
+    """
+    Check if two entity types are compatible (should be considered matches).
+    
+    Args:
+        type1: First entity type string
+        type2: Second entity type string
+        
+    Returns:
+        True if types are exact match or in same compatibility group
+    """
+    if type1 == type2:
+        return True
+    
+    for group in TYPE_COMPATIBILITY_GROUPS:
+        if type1 in group and type2 in group:
+            return True
+    
+    return False
+
+
 @dataclass
 class MatchResult:
     """Result of matching detected vs ground-truth entities."""
@@ -261,6 +316,24 @@ class BenchmarkRunner:
         verify: bool,
     ) -> SampleResult:
         """Evaluate a single sample."""
+        # Handle empty or whitespace-only text
+        if not sample.text or not sample.text.strip():
+            return SampleResult(
+                sample_id=sample.id,
+                matches=[
+                    MatchResult(
+                        detected=None,
+                        ground_truth=gt,
+                        match_type="false_negative",
+                        component="none",
+                    )
+                    for gt in sample.entities
+                ],
+                true_positives=0,
+                false_positives=0,
+                false_negatives=len(sample.entities),
+            )
+        
         # Run detection
         detected = self.engine.detect(sample.text, verify=verify)
         
@@ -304,7 +377,7 @@ class BenchmarkRunner:
                 )
                 
                 if overlap >= self.overlap_threshold and overlap > best_overlap:
-                    # Also check if types match (at least partially)
+                    # Check if types are compatible
                     if self._types_compatible(det_entity.entity_type.value, gt_entity.normalized_type):
                         best_match_idx = gt_idx
                         best_overlap = overlap
@@ -362,31 +435,7 @@ class BenchmarkRunner:
     
     def _types_compatible(self, detected_type: str, gt_type: str) -> bool:
         """Check if detected and ground truth types are compatible."""
-        # Exact match
-        if detected_type == gt_type:
-            return True
-        
-        # Compatible name types
-        name_types = {"NAME_PERSON", "NAME_PATIENT", "NAME_PROVIDER", "NAME_RELATIVE"}
-        if detected_type in name_types and gt_type in name_types:
-            return True
-        
-        # Compatible date types
-        date_types = {"DATE", "DATE_DOB", "DATE_ADMISSION", "DATE_DISCHARGE"}
-        if detected_type in date_types and gt_type in date_types:
-            return True
-        
-        # Compatible address types
-        address_types = {"ADDRESS", "ZIP"}
-        if detected_type in address_types and gt_type in address_types:
-            return True
-        
-        # Compatible account types
-        account_types = {"ACCOUNT_NUMBER", "BANK_ACCOUNT", "MRN"}
-        if detected_type in account_types and gt_type in account_types:
-            return True
-        
-        return False
+        return types_are_compatible(detected_type, gt_type)
     
     def _calculate_metrics(
         self,
