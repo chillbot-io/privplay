@@ -519,16 +519,14 @@ def display_benchmark_result(
     
     # Per-entity-type breakdown
     if result.by_entity_type:
-        console.print("[bold]By Entity Type:[/bold]")
+        console.print("[bold]Per-Entity Breakdown:[/bold]")
         
         type_table = Table(show_header=True, header_style="bold")
         type_table.add_column("Entity Type")
         type_table.add_column("Precision", justify="right")
         type_table.add_column("Recall", justify="right")
         type_table.add_column("F1", justify="right")
-        type_table.add_column("TP", justify="right")
-        type_table.add_column("FP", justify="right")
-        type_table.add_column("FN", justify="right")
+        type_table.add_column("TP/FP/FN", justify="right")
         
         sorted_types = sorted(
             result.by_entity_type.items(),
@@ -540,16 +538,14 @@ def display_benchmark_result(
             f1_style = "green" if metrics["f1"] >= 0.9 else "yellow" if metrics["f1"] >= 0.7 else "red"
             type_table.add_row(
                 entity_type,
-                f"{metrics['precision']:.1%}",
-                f"{metrics['recall']:.1%}",
-                f"[{f1_style}]{metrics['f1']:.1%}[/{f1_style}]",
-                str(metrics.get("tp", 0)),
-                str(metrics.get("fp", 0)),
-                str(metrics.get("fn", 0)),
+                f"{metrics['precision']:.0%}",
+                f"{metrics['recall']:.0%}",
+                f"[{f1_style}]{metrics['f1']:.0%}[/{f1_style}]",
+                f"{metrics.get('tp', 0)}/{metrics.get('fp', 0)}/{metrics.get('fn', 0)}",
             )
         
         if len(result.by_entity_type) > 15:
-            type_table.add_row("...", "", "", "", "", "", "")
+            type_table.add_row("...", "", "", "", "")
         
         console.print(type_table)
         console.print()
@@ -744,4 +740,102 @@ def capture_benchmark_errors(
         "tps_captured": tps_captured,
         "fps_captured": fps_captured,
         "fns_skipped": fns_skipped,
+    }
+
+
+def capture_benchmark_signals(
+    result: BenchmarkResult,
+    dataset: BenchmarkDataset,
+    engine: ClassificationEngine,
+) -> dict:
+    """
+    Capture SpanSignals with ground truth from benchmark results.
+    
+    Creates training data for meta-classifier by:
+    1. Re-running detection with signal capture enabled
+    2. Matching signals to benchmark ground truth
+    3. Labeling as TP (entity type) or FP ("NONE")
+    
+    Args:
+        result: Benchmark result with sample_results
+        dataset: Original dataset
+        engine: Classification engine
+        
+    Returns:
+        Dict with capture stats
+    """
+    from ..training.signals_storage import get_signals_storage
+    
+    storage = get_signals_storage()
+    sample_lookup = {s.id: s for s in dataset.samples}
+    
+    engine.capture_signals = True
+    
+    signals_captured = 0
+    tps_labeled = 0
+    fps_labeled = 0
+    
+    for sample_result in result.sample_results:
+        sample = sample_lookup.get(sample_result.sample_id)
+        if not sample:
+            continue
+        
+        engine.clear_captured_signals()
+        engine.detect(sample.text, verify=False)
+        signals = engine.get_captured_signals()
+        
+        if not signals:
+            continue
+        
+        doc_id = f"bench_{sample.id}"
+        
+        # Build ground truth lookup with tolerance
+        ground_truth_spans = {}
+        for gt in sample.annotations:
+            for offset in range(-2, 3):
+                ground_truth_spans[(gt.start + offset, gt.end + offset)] = gt.normalized_type
+        
+        for signal in signals:
+            span_key = (signal.span_start, signal.span_end)
+            
+            if span_key in ground_truth_spans:
+                signal.ground_truth_type = ground_truth_spans[span_key]
+                signal.ground_truth_source = "benchmark"
+                tps_labeled += 1
+            else:
+                matched = False
+                for (gt_start, gt_end), gt_type in ground_truth_spans.items():
+                    overlap_start = max(signal.span_start, gt_start)
+                    overlap_end = min(signal.span_end, gt_end)
+                    
+                    if overlap_start < overlap_end:
+                        overlap_len = overlap_end - overlap_start
+                        signal_len = signal.span_end - signal.span_start
+                        gt_len = gt_end - gt_start
+                        
+                        if overlap_len / max(signal_len, gt_len) > 0.5:
+                            signal.ground_truth_type = gt_type
+                            signal.ground_truth_source = "benchmark"
+                            tps_labeled += 1
+                            matched = True
+                            break
+                
+                if not matched:
+                    signal.ground_truth_type = "NONE"
+                    signal.ground_truth_source = "benchmark"
+                    fps_labeled += 1
+            
+            storage.add_signal(signal, doc_id)
+            signals_captured += 1
+    
+    engine.capture_signals = False
+    
+    total = tps_labeled + fps_labeled
+    balance = f"{tps_labeled/total*100:.1f}% positive" if total > 0 else "N/A"
+    
+    return {
+        "signals_captured": signals_captured,
+        "tps_labeled": tps_labeled,
+        "fps_labeled": fps_labeled,
+        "balance": balance,
     }

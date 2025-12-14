@@ -423,6 +423,7 @@ def benchmark_run(
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to history"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
     capture_errors: bool = typer.Option(False, "--capture-errors", help="Capture TPs and FPs as training data"),
+    capture_signals: bool = typer.Option(False, "--capture-signals", help="Capture SpanSignals for meta-classifier"),
 ):
     """Run benchmark on a dataset."""
     init_app(data_dir)
@@ -475,6 +476,17 @@ def benchmark_run(
         if total > 0:
             balance = stats['tps_captured'] / total * 100
             console.print(f"[bold]Training data balance: {balance:.1f}% positive, {100-balance:.1f}% negative[/bold]")
+    
+    # Capture signals for meta-classifier
+    if capture_signals:
+        console.print()
+        console.print("[bold]Capturing signals for meta-classifier...[/bold]")
+        from .benchmark.runner import capture_benchmark_signals
+        stats = capture_benchmark_signals(result, ds, engine)
+        console.print(f"[green]✓ Captured {stats['signals_captured']} signals[/green]")
+        console.print(f"  TPs labeled: {stats['tps_labeled']}")
+        console.print(f"  FPs labeled: {stats['fps_labeled']}")
+        console.print(f"  Balance: {stats['balance']}")
 
 
 @benchmark_app.command("history")
@@ -579,6 +591,139 @@ def benchmark_compare(
     console.print(f"  {'False Pos':<15} {run1.false_positives:>12} {run2.false_positives:>12} {delta_str(run1.false_positives, run2.false_positives, False):>12}")
     console.print(f"  {'False Neg':<15} {run1.false_negatives:>12} {run2.false_negatives:>12} {delta_str(run1.false_negatives, run2.false_negatives, False):>12}")
     console.print()
+
+
+# =============================================================================
+# META-CLASSIFIER COMMANDS
+# =============================================================================
+
+meta_app = typer.Typer(help="Meta-classifier commands")
+app.add_typer(meta_app, name="meta")
+
+
+@meta_app.command("status")
+def meta_status(
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Show meta-classifier and signals status."""
+    init_app(data_dir)
+    
+    from .training.signals_storage import get_signals_storage
+    from .training.meta_classifier import MetaClassifier
+    
+    storage = get_signals_storage()
+    counts = storage.count_signals()
+    
+    console.print()
+    console.print("[bold]Meta-Classifier Status[/bold]")
+    console.print("─" * 50)
+    
+    console.print()
+    console.print("[cyan]Training Signals:[/cyan]")
+    
+    table = Table(show_header=False)
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    
+    table.add_row("Total signals", str(counts["total"]))
+    table.add_row("Labeled", str(counts["labeled"]))
+    table.add_row("  Positive (is PHI)", str(counts["positive"]))
+    table.add_row("  Negative (not PHI)", str(counts["negative"]))
+    table.add_row("Unlabeled", str(counts["unlabeled"]))
+    
+    if counts["labeled"] > 0:
+        balance = counts["positive"] / counts["labeled"] * 100
+        table.add_row("Balance", f"{balance:.1f}% positive")
+    
+    console.print(table)
+    
+    console.print()
+    console.print("[cyan]Model:[/cyan]")
+    
+    meta = MetaClassifier()
+    if meta.is_trained():
+        console.print("  Status: [green]Trained[/green]")
+        
+        imp_file = meta.model_path / "feature_importance.json"
+        if imp_file.exists():
+            with open(imp_file) as f:
+                data = json.load(f)
+            console.print("  Top features:")
+            for name, importance in data["importances"][:5]:
+                console.print(f"    {name}: {importance:.3f}")
+    else:
+        console.print("  Status: [yellow]Not trained[/yellow]")
+        if counts["labeled"] < 50:
+            console.print(f"  Need at least 50 labeled signals (have {counts['labeled']})")
+        else:
+            console.print("  Run: phi-train meta train")
+    
+    console.print()
+
+
+@meta_app.command("train")
+def meta_train(
+    use_xgboost: bool = typer.Option(False, "--xgboost", help="Use XGBoost instead of RandomForest"),
+    min_samples: int = typer.Option(50, "--min-samples", help="Minimum samples required"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Train the meta-classifier on captured signals."""
+    init_app(data_dir)
+    
+    from .training.signals_storage import get_signals_storage
+    from .training.meta_classifier import MetaClassifier
+    
+    storage = get_signals_storage()
+    signals = storage.get_labeled_signals()
+    
+    if len(signals) < min_samples:
+        console.print(f"[red]Need at least {min_samples} labeled signals, have {len(signals)}[/red]")
+        console.print("Run: phi-train benchmark run <dataset> -n 1000 --capture-signals")
+        raise typer.Exit(1)
+    
+    console.print(f"Training on {len(signals)} labeled signals...")
+    
+    positive = sum(1 for s in signals if s.ground_truth_type != "NONE")
+    negative = len(signals) - positive
+    console.print(f"  Positive: {positive} ({positive/len(signals)*100:.1f}%)")
+    console.print(f"  Negative: {negative} ({negative/len(signals)*100:.1f}%)")
+    
+    meta = MetaClassifier(min_samples_for_training=min_samples)
+    
+    try:
+        metrics = meta.train(signals, use_xgboost=use_xgboost)
+        
+        console.print()
+        console.print("[green]Training complete![/green]")
+        console.print(f"  is_entity F1: {metrics['is_entity_f1']:.1%}")
+        console.print(f"  is_entity Precision: {metrics['is_entity_precision']:.1%}")
+        console.print(f"  is_entity Recall: {metrics['is_entity_recall']:.1%}")
+        console.print(f"  Train samples: {metrics['train_samples']}")
+        console.print(f"  Test samples: {metrics['test_samples']}")
+        console.print()
+        console.print(f"Model saved to: {meta.model_path}")
+        
+    except Exception as e:
+        console.print(f"[red]Training failed: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@meta_app.command("clear")
+def meta_clear(
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Clear all captured signals."""
+    init_app(data_dir)
+    
+    from .training.signals_storage import get_signals_storage
+    
+    if not typer.confirm("This will delete all captured signals. Continue?"):
+        raise typer.Abort()
+    
+    storage = get_signals_storage()
+    storage.clear()
+    
+    console.print("[green]Signals cleared.[/green]")
 
 
 # Fine-tuning command
