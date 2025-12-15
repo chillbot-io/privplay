@@ -112,7 +112,7 @@ class Encryptor:
     def derive_key(password: str, salt: bytes) -> bytes:
         """Derive a 32-byte key from password using PBKDF2."""
         import hashlib
-        return hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000, dklen=32)
+        return hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 600000, dklen=32)
     
     @staticmethod
     def generate_key() -> bytes:

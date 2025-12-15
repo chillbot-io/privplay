@@ -10,7 +10,7 @@ import yaml
 @dataclass
 class PresidioConfig:
     """Presidio PII detection settings."""
-    enabled: bool = True
+    enabled: bool = False  # Disabled by default - enable for defense-in-depth
     score_threshold: float = 0.7
     languages: list = field(default_factory=lambda: ["en"])
 
