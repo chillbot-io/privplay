@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from .store import SHDMStore, Conversation, Message
 from .tokenizer import Tokenizer, Restorer, DetectedEntity, entities_from_detection
+from .safe_harbor import SafeHarborTransformer, SafeHarborConfig
 
 
 @dataclass
@@ -92,6 +93,7 @@ class SessionManager:
         detect_fn: Optional[Callable[[str], List]] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         keep_recent: int = DEFAULT_KEEP_RECENT,
+        safe_harbor_config: Optional[SafeHarborConfig] = None,
     ):
         """Initialize session manager.
         
@@ -101,6 +103,8 @@ class SessionManager:
                        If None, no automatic detection (must provide entities manually).
             max_tokens: Trigger compaction when context exceeds this
             keep_recent: Number of recent messages to keep uncompacted
+            safe_harbor_config: Configuration for Safe Harbor transforms.
+                               If None, uses defaults (dates shifted, ages >89 → 90+, ZIPs truncated).
         """
         self.store = store
         self.detect_fn = detect_fn
@@ -109,6 +113,7 @@ class SessionManager:
         
         self._tokenizer = Tokenizer(store)
         self._restorer = Restorer(store)
+        self._safe_harbor = SafeHarborTransformer(safe_harbor_config)
     
     # =========================================================================
     # CONVERSATION LIFECYCLE
@@ -144,9 +149,9 @@ class SessionManager:
         """Process a user message and build LLM context.
         
         1. Detect PHI (if detect_fn provided and entities not given)
-        2. Tokenize PHI -> tokens
-        3. Store message
-        4. Check for compaction need
+        2. Apply Safe Harbor transforms (dates shifted, ages generalized, ZIPs truncated)
+        3. Tokenize PHI -> tokens (stores transformed values, not originals)
+        4. Store message
         5. Build context for LLM
         
         Args:
@@ -163,19 +168,71 @@ class SessionManager:
             detection_results = self.detect_fn(content)
             entities = entities_from_detection(detection_results)
         
-        # Tokenize
+        # Apply Safe Harbor transforms to entities that support it (DATE, AGE, ZIP)
+        # This modifies the entity text BEFORE tokenization, so the token maps to
+        # the Safe Harbor compliant value, not the original PHI
+        if entities:
+            entities = self._apply_safe_harbor_transforms(entities, conv_id)
+        
+        # Tokenize (now stores Safe Harbor transformed values for DATE/AGE/ZIP)
         if entities:
             redacted = self._tokenizer.tokenize(conv_id, content, entities)
         else:
             redacted = content
         
-        # Store message
+        # Store message (content = original for local display, redacted = tokenized for LLM)
         self.store.add_message(conv_id, "user", content, redacted)
         
         # Build context
         context = self._build_context(conv_id, system_prompt)
         
         return redacted, context
+    
+    def _apply_safe_harbor_transforms(
+        self,
+        entities: List[DetectedEntity],
+        conv_id: str,
+    ) -> List[DetectedEntity]:
+        """Apply Safe Harbor transforms to entity values before tokenization.
+        
+        For DATE, AGE, ZIP entities, transforms the text value so that when
+        tokenized, the token maps to the Safe Harbor compliant value.
+        
+        Args:
+            entities: Detected entities with original text
+            conv_id: Conversation ID (used for consistent date shifting)
+            
+        Returns:
+            Entities with transformed text values where applicable
+        """
+        transformed = []
+        
+        for entity in entities:
+            etype = entity.entity_type.upper() if isinstance(entity.entity_type, str) else entity.entity_type
+            
+            # Check if this entity type should be transformed
+            if self._safe_harbor.should_transform(str(etype)):
+                # Apply the appropriate transform
+                new_text = self._safe_harbor.transform_entity(
+                    entity.text,
+                    str(etype),
+                    conv_id,
+                )
+                
+                # Create new entity with transformed text
+                # Note: start/end positions stay the same - they refer to original text
+                transformed.append(DetectedEntity(
+                    start=entity.start,
+                    end=entity.end,
+                    text=new_text,  # Safe Harbor value
+                    entity_type=entity.entity_type,
+                    confidence=entity.confidence,
+                ))
+            else:
+                # Keep entity unchanged
+                transformed.append(entity)
+        
+        return transformed
     
     def process_assistant_message(
         self,

@@ -106,22 +106,30 @@ class DocumentProcessor:
     - CCD/C-CDA/CDA XML (Clinical documents)
     """
     
+    # Default OCR languages: English + Spanish (common in US healthcare)
+    DEFAULT_OCR_LANGUAGES = "eng+spa"
+    
     def __init__(
         self,
         enable_ocr: bool = True,
-        ocr_language: str = "eng",
+        ocr_language: str = None,
         min_text_length: int = 50,
     ):
         """Initialize document processor.
         
         Args:
             enable_ocr: Enable OCR for scanned PDFs and images
-            ocr_language: Tesseract language code
+            ocr_language: Tesseract language code(s), e.g. "eng" or "eng+spa".
+                         Defaults to "eng+spa" for US healthcare.
             min_text_length: Minimum extracted text length before OCR fallback
         """
         self.enable_ocr = enable_ocr
-        self.ocr_language = ocr_language
         self.min_text_length = min_text_length
+        
+        # Set OCR language with validation
+        if ocr_language is None:
+            ocr_language = self.DEFAULT_OCR_LANGUAGES
+        self.ocr_language = self._validate_ocr_languages(ocr_language) if enable_ocr else ocr_language
         
         self._check_dependencies()
     
@@ -198,6 +206,88 @@ class DocumentProcessor:
             self._deps['lxml'] = True
         except ImportError:
             self._deps['lxml'] = False
+    
+    def _get_available_ocr_languages(self) -> List[str]:
+        """Get list of installed Tesseract language packs."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ['tesseract', '--list-langs'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            # Skip first line (header) and filter empty lines
+            langs = [
+                line.strip() for line in result.stdout.split('\n')[1:]
+                if line.strip() and line.strip() != 'osd'
+            ]
+            return langs
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return []
+    
+    def _validate_ocr_languages(self, language: str) -> str:
+        """Validate OCR language codes and fall back gracefully.
+        
+        Args:
+            language: Tesseract language code(s) like "eng" or "eng+spa"
+            
+        Returns:
+            Validated language string (may be reduced if some aren't installed)
+        """
+        available = self._get_available_ocr_languages()
+        
+        if not available:
+            logger.warning("Could not detect installed Tesseract languages")
+            return language
+        
+        requested = [lang.strip() for lang in language.split('+')]
+        valid = [lang for lang in requested if lang in available]
+        missing = [lang for lang in requested if lang not in available]
+        
+        if missing:
+            missing_str = ', '.join(missing)
+            logger.warning(
+                f"OCR language(s) not installed: {missing_str}. "
+                f"Install with: sudo apt install tesseract-ocr-<lang>"
+            )
+            
+            # Provide specific hints for common languages
+            lang_packages = {
+                'spa': 'tesseract-ocr-spa',
+                'fra': 'tesseract-ocr-fra', 
+                'deu': 'tesseract-ocr-deu',
+                'chi_sim': 'tesseract-ocr-chi-sim',
+                'chi_tra': 'tesseract-ocr-chi-tra',
+                'vie': 'tesseract-ocr-vie',
+                'kor': 'tesseract-ocr-kor',
+            }
+            for lang in missing:
+                if lang in lang_packages:
+                    logger.info(f"  For {lang}: sudo apt install {lang_packages[lang]}")
+        
+        if not valid:
+            logger.warning("No valid OCR languages found, falling back to 'eng'")
+            return 'eng'
+        
+        return '+'.join(valid)
+    
+    def get_ocr_languages(self) -> Dict[str, Any]:
+        """Get OCR language configuration.
+        
+        Returns:
+            Dict with 'configured', 'available', and 'missing' languages
+        """
+        available = self._get_available_ocr_languages()
+        configured = [lang.strip() for lang in self.ocr_language.split('+')]
+        missing = [lang for lang in configured if lang not in available]
+        
+        return {
+            'configured': self.ocr_language,
+            'available': available,
+            'active': [lang for lang in configured if lang in available],
+            'missing': missing,
+        }
     
     def detect_type(self, file_path: str) -> DocumentType:
         """Detect document type from file extension and content."""
@@ -984,9 +1074,9 @@ class DocumentProcessor:
         
         return results
     
-    def get_capabilities(self) -> Dict[str, bool]:
+    def get_capabilities(self) -> Dict[str, Any]:
         """Get available extraction capabilities."""
-        return {
+        caps = {
             'pdf_native': self._deps.get('pdfplumber', False) or self._deps.get('pypdf', False),
             'pdf_ocr': self._deps.get('ocr', False),
             'docx': self._deps.get('docx', False),
@@ -1003,6 +1093,12 @@ class DocumentProcessor:
             'cda_ccd': self._deps.get('lxml', False),
             'xml': True,
         }
+        
+        # Add OCR language info if OCR is enabled
+        if self._deps.get('ocr'):
+            caps['ocr_languages'] = self.get_ocr_languages()
+        
+        return caps
 
 
 # =============================================================================
@@ -1013,7 +1109,10 @@ _default_processor: Optional[DocumentProcessor] = None
 
 
 def get_document_processor(**kwargs) -> DocumentProcessor:
-    """Get or create default document processor."""
+    """Get or create default document processor.
+    
+    Default configuration uses eng+spa OCR for US healthcare contexts.
+    """
     global _default_processor
     if _default_processor is None:
         _default_processor = DocumentProcessor(**kwargs)

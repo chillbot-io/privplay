@@ -63,6 +63,9 @@ from .dictionaries import (
     get_dictionary_status,
 )
 
+# Continuous learning
+from .cli_learn import learn_app
+
 # Stub out missing download functions (not needed for training)
 def download_fda_drugs(): pass
 def download_cms_hospitals(): pass
@@ -84,6 +87,9 @@ app = typer.Typer(
     help="PHI/PII Classification Training Pipeline",
     no_args_is_help=True,
 )
+
+# Register learn commands
+app.add_typer(learn_app, name="learn")
 
 console = Console()
 

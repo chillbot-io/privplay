@@ -61,6 +61,15 @@ from .session import (
     LLMContext,
 )
 
+from .safe_harbor import (
+    SafeHarborConfig,
+    SafeHarborTransformer,
+    DateShifter,
+    AgeGeneralizer,
+    ZIPHandler,
+    apply_safe_harbor,
+)
+
 __all__ = [
     # Store
     "SHDMStore",
@@ -79,4 +88,11 @@ __all__ = [
     # Session
     "SessionManager",
     "LLMContext",
+    # Safe Harbor
+    "SafeHarborConfig",
+    "SafeHarborTransformer",
+    "DateShifter",
+    "AgeGeneralizer",
+    "ZIPHandler",
+    "apply_safe_harbor",
 ]

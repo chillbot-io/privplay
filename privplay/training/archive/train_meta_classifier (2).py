@@ -1,4 +1,4 @@
-"""Meta-classifier training pipeline with coreference and document-level features.
+"""Meta-classifier training pipeline with coreference integration.
 
 Generates training data from multiple sources:
 1. Synthetic clinical notes (templated, perfect span tracking)
@@ -6,11 +6,7 @@ Generates training data from multiple sources:
 3. AI4Privacy samples (general PII dataset)
 4. MTSamples (REAL clinical notes with re-injected PHI)
 
-Features include:
-- Detector signals (PHI BERT, PII BERT, Presidio, Rules)
-- Coreference signals (cluster membership, anchor info, pronouns)
-- Document-level context (has_ssn, has_dates, medical_terms, entity_count, pii_density)
-- Span-level computed features (length, character composition)
+NEW: Includes coreference features for detecting pronouns/references.
 
 Usage:
     python -m privplay.training.train_meta_classifier \
@@ -420,10 +416,7 @@ def enrich_signals_with_coreference(
 
 
 def label_signals(signals: List, doc) -> List[Dict]:
-    """Label captured signals against document ground truth.
-    
-    Also computes document-level features for all signals in the document.
-    """
+    """Label captured signals against document ground truth."""
     labeled = []
     
     # Build ground truth lookup with tolerance
@@ -439,16 +432,10 @@ def label_signals(signals: List, doc) -> List[Dict]:
             if entity.coref_cluster_id not in gt_coref_lookup:
                 gt_coref_lookup[entity.coref_cluster_id] = entity.entity_type
     
-    # Compute document-level features once for all signals in this doc
-    doc_features = compute_document_features(signals, doc)
-    
     for signal in signals:
         signal_dict = signal_to_dict(signal)
         signal_dict["document_id"] = doc.id
         signal_dict["doc_type"] = doc.doc_type
-        
-        # Add document-level features
-        signal_dict.update(doc_features)
         
         # Check exact match first
         span_key = (signal.span_start, signal.span_end)
@@ -477,63 +464,6 @@ def label_signals(signals: List, doc) -> List[Dict]:
         labeled.append(signal_dict)
     
     return labeled
-
-
-def compute_document_features(signals: List, doc) -> Dict:
-    """Compute document-level features from all signals in a document.
-    
-    These features provide context - e.g., if a document already has SSNs,
-    a 9-digit number is more likely to be another SSN.
-    """
-    # Entity type detection
-    detected_types = set()
-    for signal in signals:
-        if signal.merged_type:
-            detected_types.add(signal.merged_type.upper())
-        if signal.rule_type:
-            detected_types.add(signal.rule_type.upper())
-        if signal.phi_bert_type:
-            detected_types.add(signal.phi_bert_type.upper())
-        if signal.pii_bert_type:
-            detected_types.add(signal.pii_bert_type.upper())
-    
-    # Check for SSN
-    doc_has_ssn = "SSN" in detected_types
-    
-    # Check for dates
-    date_types = {"DATE", "DATE_DOB", "DATE_ADMISSION", "DATE_DISCHARGE"}
-    doc_has_dates = bool(detected_types & date_types)
-    
-    # Check for medical terms (heuristic based on doc_type and detected types)
-    medical_types = {"DRUG", "DIAGNOSIS", "LAB_TEST", "FACILITY", "NAME_PROVIDER", "MRN"}
-    doc_has_medical_terms = bool(detected_types & medical_types)
-    
-    # Also check doc_type
-    clinical_doc_types = {
-        "admission_note", "discharge_summary", "progress_note", "lab_report",
-        "consultation_note", "referral_letter", "clinical_note", "mtsamples"
-    }
-    if hasattr(doc, 'doc_type') and doc.doc_type in clinical_doc_types:
-        doc_has_medical_terms = True
-    
-    # Entity count
-    doc_entity_count = len(signals)
-    
-    # PII density: ratio of PII character span to total document length
-    total_pii_chars = 0
-    for signal in signals:
-        total_pii_chars += signal.span_end - signal.span_start
-    
-    doc_length = len(doc.text) if hasattr(doc, 'text') and doc.text else 1
-    doc_pii_density = min(1.0, total_pii_chars / doc_length)
-    
-    return {
-        "doc_has_ssn": doc_has_ssn,
-        "doc_has_dates": doc_has_dates,
-        "doc_has_medical_terms": doc_has_medical_terms,
-        "doc_entity_count": doc_entity_count,
-        "doc_pii_density": doc_pii_density,
-    }
 
 
 def signal_to_dict(signal) -> Dict:
@@ -625,7 +555,7 @@ def train_meta_classifier(
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.metrics import f1_score, precision_score, recall_score
     
-    # Prepare features - NOW INCLUDING COREFERENCE AND DOCUMENT-LEVEL
+    # Prepare features - NOW INCLUDING COREFERENCE
     feature_names = [
         # Detector signals
         "phi_bert_detected", "phi_bert_conf",
@@ -633,15 +563,11 @@ def train_meta_classifier(
         "presidio_detected", "presidio_conf",
         "rule_detected", "rule_conf", "rule_has_checksum",
         
-        # Coreference signals
+        # Coreference signals (NEW)
         "in_coref_cluster", "coref_cluster_size", "coref_anchor_conf",
         "coref_is_anchor", "coref_is_pronoun", "coref_has_phi_anchor",
         
-        # Document-level features (context signals)
-        "doc_has_ssn", "doc_has_dates", "doc_has_medical_terms",
-        "doc_entity_count", "doc_pii_density",
-        
-        # Computed span features
+        # Computed features
         "sources_agree_count", "span_length",
         "has_digits", "has_letters", "all_caps", "all_digits", "mixed_case",
     ]
@@ -663,7 +589,7 @@ def train_meta_classifier(
             s["rule_conf"],
             int(s["rule_has_checksum"]),
             
-            # Coreference signals
+            # Coreference signals (NEW)
             int(s.get("in_coref_cluster", False)),
             s.get("coref_cluster_size", 0),
             s.get("coref_anchor_conf", 0.0),
@@ -671,14 +597,7 @@ def train_meta_classifier(
             int(s.get("coref_is_pronoun", False)),
             int(s.get("coref_anchor_type") is not None),  # coref_has_phi_anchor
             
-            # Document-level features (context signals)
-            int(s.get("doc_has_ssn", False)),
-            int(s.get("doc_has_dates", False)),
-            int(s.get("doc_has_medical_terms", False)),
-            s.get("doc_entity_count", 0),
-            s.get("doc_pii_density", 0.0),
-            
-            # Computed span features
+            # Computed features
             s["sources_agree_count"],
             s["span_length"],
             int(s["has_digits"]),
@@ -775,7 +694,6 @@ def train_meta_classifier(
         "use_xgboost": use_xgboost,
         "feature_count": len(feature_names),
         "includes_coreference": True,
-        "includes_document_features": True,
     }
     
     metadata_path = output_dir / "metadata.json"
@@ -799,7 +717,7 @@ def main():
     args = parser.parse_args()
     
     console.print("\n[bold cyan]═══ Meta-Classifier Training Pipeline ═══[/bold cyan]\n")
-    console.print("[dim]With coreference + document-level features![/dim]\n")
+    console.print("[dim]Now with coreference features![/dim]\n")
     
     # Output directory
     if args.output:
