@@ -2,6 +2,9 @@
 
 Generates training data for the meta-classifier by creating clinical notes
 with known PHI/PII locations tracked by character offset.
+
+UPDATED: Now includes pronouns and references (He/She, the patient, Mr./Ms. X)
+as labeled entities for coreference training.
 """
 
 from dataclasses import dataclass, field
@@ -21,6 +24,9 @@ class LabeledEntity:
     end: int
     text: str
     entity_type: str
+    # NEW: Track coreference info
+    coref_cluster_id: Optional[int] = None  # Which cluster this belongs to
+    is_anchor: bool = False  # Is this the primary mention?
     
     def to_dict(self) -> dict:
         return {
@@ -28,6 +34,8 @@ class LabeledEntity:
             "end": self.end,
             "text": self.text,
             "entity_type": self.entity_type,
+            "coref_cluster_id": self.coref_cluster_id,
+            "is_anchor": self.is_anchor,
         }
 
 
@@ -54,16 +62,17 @@ class LabeledDocument:
 # ENTITY GENERATORS
 # =============================================================================
 
-def generate_patient_name() -> Tuple[str, str]:
-    """Returns (full_name, first_name)"""
-    name = fake.name()
-    first = name.split()[0]
-    return name, first
+def generate_patient_name() -> Tuple[str, str, str]:
+    """Returns (full_name, first_name, last_name)"""
+    first = fake.first_name()
+    last = fake.last_name()
+    return f"{first} {last}", first, last
 
 
-def generate_provider_name() -> str:
-    """Returns provider name with title."""
-    return f"Dr. {fake.last_name()}"
+def generate_provider_name() -> Tuple[str, str]:
+    """Returns (full_name_with_title, last_name)"""
+    last = fake.last_name()
+    return f"Dr. {last}", last
 
 
 def generate_dob() -> str:
@@ -155,23 +164,31 @@ LOCATIONS = ["MICU", "SICU", "CCU", "ED", "4 North", "3 South", "Oncology Unit",
 
 
 # =============================================================================
-# DOCUMENT BUILDER
+# DOCUMENT BUILDER WITH COREFERENCE TRACKING
 # =============================================================================
 
 class DocumentBuilder:
-    """Builds documents while tracking entity positions."""
+    """Builds documents while tracking entity positions and coreference clusters."""
     
     def __init__(self):
         self.parts: List[str] = []
         self.entities: List[LabeledEntity] = []
         self.current_pos = 0
+        self._coref_cluster_counter = 0
+        self._active_clusters: Dict[str, int] = {}  # name -> cluster_id
     
     def add_text(self, text: str):
         """Add plain text (no entity)."""
         self.parts.append(text)
         self.current_pos += len(text)
     
-    def add_entity(self, text: str, entity_type: str):
+    def add_entity(
+        self, 
+        text: str, 
+        entity_type: str,
+        coref_cluster_id: Optional[int] = None,
+        is_anchor: bool = False,
+    ):
         """Add text that is an entity."""
         start = self.current_pos
         end = start + len(text)
@@ -181,10 +198,39 @@ class DocumentBuilder:
             end=end,
             text=text,
             entity_type=entity_type,
+            coref_cluster_id=coref_cluster_id,
+            is_anchor=is_anchor,
         ))
         
         self.parts.append(text)
         self.current_pos = end
+    
+    def start_coref_cluster(self, name: str) -> int:
+        """Start a new coreference cluster, returns cluster_id."""
+        cluster_id = self._coref_cluster_counter
+        self._coref_cluster_counter += 1
+        self._active_clusters[name] = cluster_id
+        return cluster_id
+    
+    def get_cluster_id(self, name: str) -> Optional[int]:
+        """Get cluster_id for a named entity."""
+        return self._active_clusters.get(name)
+    
+    def add_patient_anchor(self, full_name: str, entity_type: str = "NAME_PATIENT") -> int:
+        """Add primary patient name mention, starts coreference cluster."""
+        cluster_id = self.start_coref_cluster(full_name)
+        self.add_entity(full_name, entity_type, coref_cluster_id=cluster_id, is_anchor=True)
+        return cluster_id
+    
+    def add_patient_reference(
+        self, 
+        text: str, 
+        cluster_name: str,
+        entity_type: str = "NAME_PATIENT",
+    ):
+        """Add a reference to a patient (pronoun, partial name, etc.)."""
+        cluster_id = self.get_cluster_id(cluster_name)
+        self.add_entity(text, entity_type, coref_cluster_id=cluster_id, is_anchor=False)
     
     def add_line(self, text: str = ""):
         """Add text followed by newline."""
@@ -206,16 +252,40 @@ class DocumentBuilder:
 
 
 # =============================================================================
-# DOCUMENT GENERATORS
+# PRONOUN/REFERENCE HELPERS
+# =============================================================================
+
+def get_pronoun(gender: str) -> str:
+    """Get subject pronoun for gender."""
+    return "He" if gender == "male" else "She"
+
+
+def get_pronoun_object(gender: str) -> str:
+    """Get object pronoun for gender."""
+    return "him" if gender == "male" else "her"
+
+
+def get_pronoun_possessive(gender: str) -> str:
+    """Get possessive pronoun for gender."""
+    return "his" if gender == "male" else "her"
+
+
+def get_title(gender: str) -> str:
+    """Get title for gender."""
+    return "Mr." if gender == "male" else "Ms."
+
+
+# =============================================================================
+# DOCUMENT GENERATORS (WITH COREFERENCE)
 # =============================================================================
 
 def generate_admission_note() -> LabeledDocument:
-    """Generate an admission note with labeled entities."""
+    """Generate an admission note with labeled entities including pronouns."""
     builder = DocumentBuilder()
     
     # Generate values
-    patient_name, first_name = generate_patient_name()
-    provider_name = generate_provider_name()
+    patient_name, first_name, last_name = generate_patient_name()
+    provider_name, provider_last = generate_provider_name()
     dob = generate_dob()
     mrn = generate_mrn()
     admit_date = generate_date()
@@ -229,8 +299,9 @@ def generate_admission_note() -> LabeledDocument:
     builder.add_line("ADMISSION NOTE")
     builder.add_line()
     
+    # Primary patient mention (anchor)
     builder.add_text("Patient: ")
-    builder.add_entity(patient_name, "NAME_PATIENT")
+    cluster_id = builder.add_patient_anchor(patient_name)
     builder.add_line()
     
     builder.add_text("DOB: ")
@@ -249,10 +320,13 @@ def generate_admission_note() -> LabeledDocument:
     builder.add_line(f"Chief Complaint: {complaint}")
     builder.add_line()
     
+    # HPI with first name reference and pronoun
     builder.add_line("History of Present Illness:")
-    builder.add_entity(first_name, "NAME_PATIENT")
+    builder.add_patient_reference(first_name, patient_name)
     builder.add_text(f" is a {age} year old {gender} who presents with {complaint}. ")
-    builder.add_text(f"Patient reports symptoms began {random.randint(1, 14)} days ago.")
+    builder.add_patient_reference(get_pronoun(gender), patient_name)
+    builder.add_text(f" reports symptoms began {random.randint(1, 14)} days ago. ")
+    builder.add_text("The patient denies any recent travel or sick contacts.")
     builder.add_line()
     
     builder.add_line()
@@ -269,7 +343,9 @@ def generate_admission_note() -> LabeledDocument:
     builder.add_line(f"Allergies: {random.choice(ALLERGIES)}")
     
     builder.add_line()
-    builder.add_text("Social History: Patient lives in ")
+    builder.add_text("Social History: ")
+    builder.add_patient_reference("The patient", patient_name)
+    builder.add_text(" lives in ")
     builder.add_entity(city, "LOCATION")
     builder.add_text(", ")
     builder.add_entity(state, "LOCATION")
@@ -291,7 +367,10 @@ def generate_admission_note() -> LabeledDocument:
     
     builder.add_line()
     builder.add_line("Assessment/Plan:")
-    builder.add_line(fake.paragraph(nb_sentences=2))
+    builder.add_patient_reference(f"{get_title(gender)} {last_name}", patient_name)
+    builder.add_text(" will be admitted for further workup. ")
+    builder.add_text(fake.sentence())
+    builder.add_line()
     
     builder.add_line()
     builder.add_text("Attending: ")
@@ -309,18 +388,17 @@ def generate_admission_note() -> LabeledDocument:
         text=text,
         entities=entities,
         doc_type="admission_note",
-        metadata={"has_ssn": False, "has_medical": True},
+        metadata={"has_ssn": False, "has_medical": True, "has_coreference": True},
     )
 
 
 def generate_discharge_summary() -> LabeledDocument:
-    """Generate a discharge summary with labeled entities."""
+    """Generate a discharge summary with labeled entities including pronouns."""
     builder = DocumentBuilder()
     
     # Generate values
-    patient_name, first_name = generate_patient_name()
-    provider_name = generate_provider_name()
-    provider_last = provider_name.replace("Dr. ", "")
+    patient_name, first_name, last_name = generate_patient_name()
+    provider_name, provider_last = generate_provider_name()
     dob = generate_dob()
     mrn = generate_mrn()
     ssn = generate_ssn()
@@ -330,13 +408,14 @@ def generate_discharge_summary() -> LabeledDocument:
     phone = generate_phone()
     email = generate_email()
     complaint = random.choice(COMPLAINTS)
+    gender = random.choice(["male", "female"])
     
     # Build document
     builder.add_line("DISCHARGE SUMMARY")
     builder.add_line()
     
     builder.add_text("Patient: ")
-    builder.add_entity(patient_name, "NAME_PATIENT")
+    cluster_id = builder.add_patient_anchor(patient_name)
     builder.add_line()
     
     builder.add_text("DOB: ")
@@ -365,11 +444,16 @@ def generate_discharge_summary() -> LabeledDocument:
     
     builder.add_line()
     builder.add_line("Hospital Course:")
-    builder.add_entity(first_name, "NAME_PATIENT")
+    builder.add_patient_reference(first_name, patient_name)
     builder.add_text(f" was admitted on ")
     builder.add_entity(admit_date, "DATE")
     builder.add_text(f" for {complaint}. ")
-    builder.add_line(fake.paragraph(nb_sentences=2))
+    builder.add_patient_reference(get_pronoun(gender), patient_name)
+    builder.add_text(" was started on appropriate therapy. ")
+    builder.add_patient_reference("The patient", patient_name)
+    builder.add_text(" showed steady improvement. ")
+    builder.add_text(fake.sentence())
+    builder.add_line()
     
     builder.add_line()
     builder.add_line("Discharge Medications:")
@@ -378,7 +462,8 @@ def generate_discharge_summary() -> LabeledDocument:
     
     builder.add_line()
     builder.add_line("Follow-up:")
-    builder.add_text(f"Appointment with Dr. ")
+    builder.add_patient_reference(f"{get_title(gender)} {last_name}", patient_name)
+    builder.add_text(f" should follow up with Dr. ")
     builder.add_entity(provider_last, "NAME_PROVIDER")
     builder.add_text(" on ")
     builder.add_entity(followup_date, "DATE")
@@ -404,7 +489,7 @@ def generate_discharge_summary() -> LabeledDocument:
         text=text,
         entities=entities,
         doc_type="discharge_summary",
-        metadata={"has_ssn": True, "has_medical": True},
+        metadata={"has_ssn": True, "has_medical": True, "has_coreference": True},
     )
 
 
@@ -412,8 +497,8 @@ def generate_lab_report() -> LabeledDocument:
     """Generate a lab report with labeled entities."""
     builder = DocumentBuilder()
     
-    patient_name, _ = generate_patient_name()
-    provider_name = generate_provider_name()
+    patient_name, first_name, last_name = generate_patient_name()
+    provider_name, _ = generate_provider_name()
     reviewer = fake.name()
     dob = generate_dob()
     mrn = generate_mrn()
@@ -424,7 +509,7 @@ def generate_lab_report() -> LabeledDocument:
     builder.add_line()
     
     builder.add_text("Patient: ")
-    builder.add_entity(patient_name, "NAME_PATIENT")
+    builder.add_patient_anchor(patient_name)
     builder.add_line()
     
     builder.add_text("DOB: ")
@@ -475,19 +560,20 @@ def generate_lab_report() -> LabeledDocument:
         text=text,
         entities=entities,
         doc_type="lab_report",
-        metadata={"has_ssn": False, "has_medical": True},
+        metadata={"has_ssn": False, "has_medical": True, "has_coreference": False},
     )
 
 
 def generate_progress_note() -> LabeledDocument:
-    """Generate a progress note with labeled entities."""
+    """Generate a progress note with labeled entities including pronouns."""
     builder = DocumentBuilder()
     
-    patient_name, first_name = generate_patient_name()
-    provider_name = generate_provider_name()
+    patient_name, first_name, last_name = generate_patient_name()
+    provider_name, provider_last = generate_provider_name()
     mrn = generate_mrn()
     date = generate_date()
     pager = f"{random.randint(100, 999)}-{random.randint(1000, 9999)}"
+    gender = random.choice(["male", "female"])
     
     builder.add_line("PROGRESS NOTE")
     builder.add_line()
@@ -497,7 +583,7 @@ def generate_progress_note() -> LabeledDocument:
     builder.add_line()
     
     builder.add_text("Patient: ")
-    builder.add_entity(patient_name, "NAME_PATIENT")
+    builder.add_patient_anchor(patient_name)
     builder.add_line()
     
     builder.add_text("MRN: ")
@@ -506,10 +592,11 @@ def generate_progress_note() -> LabeledDocument:
     
     builder.add_line()
     builder.add_line("Subjective:")
-    builder.add_text("Patient reports ")
-    builder.add_text(fake.sentence())
+    builder.add_patient_reference("The patient", patient_name)
+    builder.add_text(" reports ")
+    builder.add_text(fake.sentence().lower())
     builder.add_text(" ")
-    builder.add_entity(first_name, "NAME_PATIENT")
+    builder.add_patient_reference(get_pronoun(gender), patient_name)
     builder.add_text(" denies ")
     builder.add_line(random.choice(["chest pain", "shortness of breath", "fever", "nausea"]) + ".")
     
@@ -522,11 +609,17 @@ def generate_progress_note() -> LabeledDocument:
     
     builder.add_line()
     builder.add_line("Assessment:")
-    builder.add_line(fake.sentence())
+    builder.add_patient_reference(f"{get_title(gender)} {last_name}", patient_name)
+    builder.add_text(" is doing well. ")
+    builder.add_text(fake.sentence())
+    builder.add_line()
     
     builder.add_line()
     builder.add_line("Plan:")
-    builder.add_line(fake.sentence())
+    builder.add_text("Continue current management. Will see ")
+    builder.add_patient_reference(get_pronoun_object(gender), patient_name)
+    builder.add_text(" again in 1 week.")
+    builder.add_line()
     
     builder.add_line()
     builder.add_entity(provider_name, "NAME_PROVIDER")
@@ -543,17 +636,17 @@ def generate_progress_note() -> LabeledDocument:
         text=text,
         entities=entities,
         doc_type="progress_note",
-        metadata={"has_ssn": False, "has_medical": True},
+        metadata={"has_ssn": False, "has_medical": True, "has_coreference": True},
     )
 
 
 def generate_referral_letter() -> LabeledDocument:
-    """Generate a referral letter with labeled entities."""
+    """Generate a referral letter with labeled entities including pronouns."""
     builder = DocumentBuilder()
     
-    patient_name, first_name = generate_patient_name()
-    referring_doc = generate_provider_name()
-    receiving_doc = generate_provider_name()
+    patient_name, first_name, last_name = generate_patient_name()
+    referring_doc, referring_last = generate_provider_name()
+    receiving_doc, receiving_last = generate_provider_name()
     dob = generate_dob()
     mrn = generate_mrn()
     phone = generate_phone()
@@ -561,6 +654,8 @@ def generate_referral_letter() -> LabeledDocument:
     date = generate_date()
     address = generate_address()
     city, state = generate_city_state()
+    gender = random.choice(["male", "female"])
+    complaint = random.choice(COMPLAINTS)
     
     builder.add_line(f"Date: ")
     builder.add_entity(date, "DATE")
@@ -579,7 +674,7 @@ def generate_referral_letter() -> LabeledDocument:
     builder.add_line()
     
     builder.add_text("RE: ")
-    builder.add_entity(patient_name, "NAME_PATIENT")
+    builder.add_patient_anchor(patient_name)
     builder.add_line()
     
     builder.add_text("DOB: ")
@@ -591,18 +686,25 @@ def generate_referral_letter() -> LabeledDocument:
     builder.add_line()
     builder.add_line()
     
-    builder.add_text("Dear ")
-    builder.add_entity(receiving_doc, "NAME_PROVIDER")
+    builder.add_text("Dear Dr. ")
+    builder.add_entity(receiving_last, "NAME_PROVIDER")
     builder.add_line(",")
     builder.add_line()
     
     builder.add_text("I am referring ")
-    builder.add_entity(first_name, "NAME_PATIENT")
-    builder.add_text(f" for evaluation of {random.choice(COMPLAINTS)}. ")
-    builder.add_line(fake.paragraph(nb_sentences=3))
+    builder.add_patient_reference(f"{get_title(gender)} {last_name}", patient_name)
+    builder.add_text(f" for evaluation of {complaint}. ")
+    builder.add_patient_reference(get_pronoun(gender), patient_name)
+    builder.add_text(" has been experiencing symptoms for the past few weeks. ")
+    builder.add_patient_reference("The patient", patient_name)
+    builder.add_text(" would benefit from your expertise.")
+    builder.add_line()
     builder.add_line()
     
-    builder.add_line("Please contact my office with any questions.")
+    builder.add_text("Please see ")
+    builder.add_patient_reference(get_pronoun_object(gender), patient_name)
+    builder.add_text(" at your earliest convenience.")
+    builder.add_line()
     builder.add_line()
     
     builder.add_line("Sincerely,")
@@ -625,7 +727,7 @@ def generate_referral_letter() -> LabeledDocument:
         text=text,
         entities=entities,
         doc_type="referral_letter",
-        metadata={"has_ssn": False, "has_medical": True},
+        metadata={"has_ssn": False, "has_medical": True, "has_coreference": True},
     )
 
 
@@ -633,7 +735,7 @@ def generate_insurance_form() -> LabeledDocument:
     """Generate an insurance form with PII."""
     builder = DocumentBuilder()
     
-    patient_name, _ = generate_patient_name()
+    patient_name, first_name, last_name = generate_patient_name()
     dob = generate_dob()
     ssn = generate_ssn()
     phone = generate_phone()
@@ -647,7 +749,7 @@ def generate_insurance_form() -> LabeledDocument:
     builder.add_line()
     
     builder.add_text("Name: ")
-    builder.add_entity(patient_name, "NAME_PATIENT")
+    builder.add_patient_anchor(patient_name)
     builder.add_line()
     
     builder.add_text("Date of Birth: ")
@@ -694,15 +796,15 @@ def generate_insurance_form() -> LabeledDocument:
         text=text,
         entities=entities,
         doc_type="insurance_form",
-        metadata={"has_ssn": True, "has_medical": False},
+        metadata={"has_ssn": True, "has_medical": False, "has_coreference": False},
     )
 
 
 def generate_brief_note() -> LabeledDocument:
-    """Generate a brief clinical note."""
+    """Generate a brief clinical note with pronouns."""
     builder = DocumentBuilder()
     
-    patient_name, first_name = generate_patient_name()
+    patient_name, first_name, last_name = generate_patient_name()
     provider_last = fake.last_name()
     mrn = generate_mrn()
     date = generate_date()
@@ -713,7 +815,7 @@ def generate_brief_note() -> LabeledDocument:
     complaint = random.choice(COMPLAINTS)
     
     builder.add_text("Patient ")
-    builder.add_entity(patient_name, "NAME_PATIENT")
+    builder.add_patient_anchor(patient_name)
     builder.add_text(" (")
     builder.add_entity(mrn, "MRN")
     builder.add_text(f") seen in {location} on ")
@@ -722,12 +824,18 @@ def generate_brief_note() -> LabeledDocument:
     builder.add_line()
     
     builder.add_line(f"CC: {complaint}")
-    builder.add_entity(first_name, "NAME_PATIENT")
-    builder.add_line(f" is {age}yo {gender}. {fake.sentence()}")
+    builder.add_patient_reference(f"{get_title(gender)} {last_name}", patient_name)
+    builder.add_text(f" is {age}yo {gender}. ")
+    builder.add_patient_reference(get_pronoun(gender), patient_name)
+    builder.add_text(f" reports {fake.sentence().lower()}")
+    builder.add_line()
     builder.add_line()
     
     builder.add_line(f"A: {random.choice(PMH_CONDITIONS)}")
-    builder.add_line(f"P: {fake.sentence()}")
+    builder.add_text("P: Will follow up with ")
+    builder.add_patient_reference("the patient", patient_name)
+    builder.add_text(" in 2 weeks.")
+    builder.add_line()
     builder.add_line()
     
     builder.add_text("- Dr. ")
@@ -745,7 +853,102 @@ def generate_brief_note() -> LabeledDocument:
         text=text,
         entities=entities,
         doc_type="brief_note",
-        metadata={"has_ssn": False, "has_medical": True},
+        metadata={"has_ssn": False, "has_medical": True, "has_coreference": True},
+    )
+
+
+def generate_consultation_note() -> LabeledDocument:
+    """Generate a consultation note with rich coreference patterns."""
+    builder = DocumentBuilder()
+    
+    patient_name, first_name, last_name = generate_patient_name()
+    consulting_doc, consulting_last = generate_provider_name()
+    requesting_doc, requesting_last = generate_provider_name()
+    dob = generate_dob()
+    mrn = generate_mrn()
+    date = generate_date()
+    phone = generate_phone()
+    age = random.randint(18, 95)
+    gender = random.choice(["male", "female"])
+    complaint = random.choice(COMPLAINTS)
+    
+    builder.add_line("CONSULTATION NOTE")
+    builder.add_line()
+    
+    builder.add_text("Date: ")
+    builder.add_entity(date, "DATE")
+    builder.add_line()
+    
+    builder.add_text("Patient: ")
+    builder.add_patient_anchor(patient_name)
+    builder.add_line()
+    
+    builder.add_text("DOB: ")
+    builder.add_entity(dob, "DATE_DOB")
+    builder.add_line()
+    
+    builder.add_text("MRN: ")
+    builder.add_entity(mrn, "MRN")
+    builder.add_line()
+    
+    builder.add_text("Requesting Physician: ")
+    builder.add_entity(requesting_doc, "NAME_PROVIDER")
+    builder.add_line()
+    
+    builder.add_line()
+    builder.add_line("Reason for Consultation:")
+    builder.add_text(f"Thank you for asking me to see ")
+    builder.add_patient_reference(f"{get_title(gender)} {last_name}", patient_name)
+    builder.add_text(f" regarding {complaint}.")
+    builder.add_line()
+    
+    builder.add_line()
+    builder.add_line("History:")
+    builder.add_patient_reference(first_name, patient_name)
+    builder.add_text(f" is a {age} year old {gender} with a history of ")
+    builder.add_text(f"{random.choice(PMH_CONDITIONS).lower()}. ")
+    builder.add_patient_reference(get_pronoun(gender), patient_name)
+    builder.add_text(f" reports that {get_pronoun_possessive(gender)} symptoms began recently. ")
+    builder.add_patient_reference("The patient", patient_name)
+    builder.add_text(" has tried over-the-counter medications without relief.")
+    builder.add_line()
+    
+    builder.add_line()
+    builder.add_line("Physical Examination:")
+    builder.add_text("On examination, ")
+    builder.add_patient_reference(f"{get_title(gender)} {last_name}", patient_name)
+    builder.add_text(" appears comfortable. ")
+    for finding in random.sample(EXAM_FINDINGS, 2):
+        builder.add_line(f"- {finding}")
+    
+    builder.add_line()
+    builder.add_line("Assessment and Recommendations:")
+    builder.add_text("Based on my evaluation, I believe ")
+    builder.add_patient_reference(get_pronoun_object(gender), patient_name)
+    builder.add_text(" would benefit from ")
+    builder.add_text(f"{random.choice(MEDICATIONS).lower()}. ")
+    builder.add_text("I will see ")
+    builder.add_patient_reference("the patient", patient_name)
+    builder.add_text(" again in 2 weeks.")
+    builder.add_line()
+    
+    builder.add_line()
+    builder.add_text("Consulting Physician: ")
+    builder.add_entity(consulting_doc, "NAME_PROVIDER")
+    builder.add_line()
+    
+    builder.add_text("Phone: ")
+    builder.add_entity(phone, "PHONE")
+    builder.add_line()
+    
+    text, entities = builder.build()
+    
+    return LabeledDocument(
+        id=str(uuid.uuid4()),
+        text=text,
+        entities=entities,
+        doc_type="consultation_note",
+        metadata={"has_ssn": False, "has_medical": True, "has_coreference": True},
     )
 
 
@@ -754,13 +957,14 @@ def generate_brief_note() -> LabeledDocument:
 # =============================================================================
 
 GENERATORS = [
-    (generate_admission_note, 0.20),
-    (generate_discharge_summary, 0.20),
-    (generate_lab_report, 0.15),
+    (generate_admission_note, 0.18),
+    (generate_discharge_summary, 0.18),
+    (generate_lab_report, 0.12),
     (generate_progress_note, 0.15),
     (generate_referral_letter, 0.10),
-    (generate_insurance_form, 0.10),
-    (generate_brief_note, 0.10),
+    (generate_insurance_form, 0.08),
+    (generate_brief_note, 0.09),
+    (generate_consultation_note, 0.10),  # NEW
 ]
 
 
@@ -801,6 +1005,36 @@ def validate_dataset(docs: List[LabeledDocument]) -> Tuple[int, int]:
     return valid, invalid
 
 
+def get_coreference_stats(docs: List[LabeledDocument]) -> Dict:
+    """Get statistics about coreference in the dataset."""
+    total_entities = 0
+    anchor_entities = 0
+    reference_entities = 0
+    docs_with_coref = 0
+    
+    for doc in docs:
+        has_coref = False
+        for entity in doc.entities:
+            total_entities += 1
+            if entity.coref_cluster_id is not None:
+                has_coref = True
+                if entity.is_anchor:
+                    anchor_entities += 1
+                else:
+                    reference_entities += 1
+        if has_coref:
+            docs_with_coref += 1
+    
+    return {
+        "total_documents": len(docs),
+        "docs_with_coreference": docs_with_coref,
+        "total_entities": total_entities,
+        "anchor_entities": anchor_entities,
+        "reference_entities": reference_entities,
+        "avg_references_per_doc": reference_entities / len(docs) if docs else 0,
+    }
+
+
 # =============================================================================
 # CLI
 # =============================================================================
@@ -817,12 +1051,18 @@ if __name__ == "__main__":
     valid, invalid = validate_dataset(docs)
     print(f"Valid: {valid}, Invalid: {invalid}")
     
+    print("\nCoreference stats:")
+    coref_stats = get_coreference_stats(docs)
+    for key, value in coref_stats.items():
+        print(f"  {key}: {value}")
+    
     if invalid == 0:
         print("\nSample document:")
         sample = docs[0]
         print(f"Type: {sample.doc_type}")
         print(f"Entities: {len(sample.entities)}")
-        for e in sample.entities[:5]:
-            print(f"  [{e.start}:{e.end}] {e.entity_type}: '{e.text}'")
+        for e in sample.entities[:10]:
+            coref_info = f" [cluster={e.coref_cluster_id}, anchor={e.is_anchor}]" if e.coref_cluster_id is not None else ""
+            print(f"  [{e.start}:{e.end}] {e.entity_type}: '{e.text}'{coref_info}")
         print("\nText preview:")
         print(sample.text[:500])

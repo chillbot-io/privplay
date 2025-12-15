@@ -301,24 +301,10 @@ class Rule:
     validator: Optional[Callable[[str], bool]] = None
     
     def find_all(self, text: str) -> List[Entity]:
-        """Find all matches in text, applying validator if present.
-        
-        If the pattern has a capture group, extracts the first group as the entity text.
-        This allows patterns like r'(?:SSN|Social\s*Security)[:\s#]*(\d{3}-\d{2}-\d{4})'
-        to capture just the SSN number, not the label.
-        """
+        """Find all matches in text, applying validator if present."""
         entities = []
         for match in self.pattern.finditer(text):
-            # Check if there's a capture group
-            if match.lastindex and match.lastindex >= 1:
-                # Use capture group 1 as the entity text
-                matched_text = match.group(1)
-                # Adjust start/end to the capture group span
-                start, end = match.span(1)
-            else:
-                # No capture group, use full match
-                matched_text = match.group()
-                start, end = match.start(), match.end()
+            matched_text = match.group()
             
             # Apply validator if present
             if self.validator is not None:
@@ -327,8 +313,8 @@ class Rule:
             
             entities.append(Entity(
                 text=matched_text,
-                start=start,
-                end=end,
+                start=match.start(),
+                end=match.end(),
                 entity_type=self.entity_type,
                 confidence=self.confidence,
                 source=SourceType.RULE,
@@ -804,7 +790,7 @@ class RuleEngine:
         self.add_rule(Rule(
             name="dob_labeled",
             pattern=re.compile(
-                r'(?:DOB|D\.O\.B\.?|Date\s*of\s*Birth|Birth\s*Date|Born)[:\s]*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+                r'(?:DOB|D\.O\.B\.?|Date\s*of\s*Birth|Birth\s*Date|Born)[:\s]*\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}',
                 re.I
             ),
             entity_type=EntityType.DATE_DOB,

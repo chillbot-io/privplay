@@ -25,3 +25,14 @@ models/
 # OS
 .DS_Store
 Thumbs.db
+
+# Models
+*.pt
+*.bin
+*.pkl
+*.joblib
+*.safetensors
+.privplay/
+models/
+*.onnx
+

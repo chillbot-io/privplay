@@ -1,26 +1,16 @@
-"""Meta-classifier training pipeline with coreference integration.
+"""Meta-classifier training pipeline.
 
-Generates training data from multiple sources:
-1. Synthetic clinical notes (templated, perfect span tracking)
-2. Adversarial cases (hard negatives and edge cases)
-3. AI4Privacy samples (general PII dataset)
-4. MTSamples (REAL clinical notes with re-injected PHI)
-
-NEW: Includes coreference features for detecting pronouns/references.
+Generates training data, captures signals from detectors, and trains the meta-classifier.
 
 Usage:
-    python -m privplay.training.train_meta_classifier \
-        --synthetic 2000 \
-        --adversarial 1000 \
-        --ai4privacy 1000 \
-        --mtsamples 1000
+    python -m privplay.training.train_meta_classifier --samples 5000
 """
 
 import argparse
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from dataclasses import asdict
 from datetime import datetime
 
@@ -33,42 +23,33 @@ logger = logging.getLogger(__name__)
 
 
 def generate_training_data(
-    n_synthetic: int = 2000,
+    n_synthetic: int = 3000,
     n_adversarial: int = 1000,
     n_ai4privacy: int = 1000,
-    n_mtsamples: int = 1000,
-) -> Tuple[List, List, List, List]:
-    """Generate all training data from multiple sources."""
-    from .synthetic_generator import generate_synthetic_dataset, validate_dataset, get_coreference_stats
+) -> Tuple[List, List, List]:
+    """Generate all training data."""
+    from .synthetic_generator import generate_synthetic_dataset, validate_dataset
     from .adversarial_cases import generate_adversarial_dataset, get_adversarial_stats
     
     console.print("\n[bold]Step 1: Generate Training Data[/bold]")
     console.print("─" * 50)
     
-    # 1. Synthetic clinical notes
-    synthetic_docs = []
-    if n_synthetic > 0:
-        console.print(f"\nGenerating {n_synthetic} synthetic clinical notes...")
-        synthetic_docs = generate_synthetic_dataset(n_synthetic)
-        valid, invalid = validate_dataset(synthetic_docs)
-        console.print(f"  ✓ Generated {valid} valid documents ({invalid} invalid)")
-        
-        # Show coreference stats
-        coref_stats = get_coreference_stats(synthetic_docs)
-        console.print(f"  Coreference: {coref_stats['docs_with_coreference']} docs, {coref_stats['reference_entities']} references")
+    # Synthetic clinical notes
+    console.print(f"\nGenerating {n_synthetic} synthetic clinical notes...")
+    synthetic_docs = generate_synthetic_dataset(n_synthetic)
+    valid, invalid = validate_dataset(synthetic_docs)
+    console.print(f"  ✓ Generated {valid} valid documents ({invalid} invalid)")
     
-    # 2. Adversarial cases
-    adversarial_docs = []
-    if n_adversarial > 0:
-        console.print(f"\nGenerating {n_adversarial} adversarial cases...")
-        adversarial_docs = generate_adversarial_dataset(n_adversarial)
-        stats = get_adversarial_stats(adversarial_docs)
-        console.print(f"  ✓ Generated {len(adversarial_docs)} adversarial cases")
-        console.print("  Distribution:")
-        for adv_type, count in sorted(stats.items(), key=lambda x: -x[1])[:5]:
-            console.print(f"    {adv_type}: {count}")
+    # Adversarial cases
+    console.print(f"\nGenerating {n_adversarial} adversarial cases...")
+    adversarial_docs = generate_adversarial_dataset(n_adversarial)
+    stats = get_adversarial_stats(adversarial_docs)
+    console.print(f"  ✓ Generated {len(adversarial_docs)} adversarial cases")
+    console.print("  Distribution:")
+    for adv_type, count in sorted(stats.items(), key=lambda x: -x[1])[:5]:
+        console.print(f"    {adv_type}: {count}")
     
-    # 3. AI4Privacy samples
+    # AI4Privacy sample
     ai4privacy_docs = []
     if n_ai4privacy > 0:
         console.print(f"\nLoading {n_ai4privacy} AI4Privacy samples...")
@@ -79,31 +60,7 @@ def generate_training_data(
             console.print(f"  [yellow]⚠ Could not load AI4Privacy: {e}[/yellow]")
             console.print("  Continuing without AI4Privacy data...")
     
-    # 4. MTSamples
-    mtsamples_docs = []
-    if n_mtsamples > 0:
-        console.print(f"\nLoading {n_mtsamples} MTSamples documents (with PHI re-injection)...")
-        try:
-            mtsamples_docs = load_mtsamples_sample(n_mtsamples)
-            console.print(f"  ✓ Loaded {len(mtsamples_docs)} MTSamples documents")
-            
-            # Show specialty distribution
-            from collections import Counter
-            specialties = Counter(
-                doc.metadata.get("medical_specialty", "unknown") 
-                for doc in mtsamples_docs
-            )
-            console.print("  Specialties:")
-            for specialty, count in specialties.most_common(5):
-                console.print(f"    {specialty}: {count}")
-                
-        except Exception as e:
-            console.print(f"  [yellow]⚠ Could not load MTSamples: {e}[/yellow]")
-            console.print("  Continuing without MTSamples data...")
-            import traceback
-            logger.debug(traceback.format_exc())
-    
-    return synthetic_docs, adversarial_docs, ai4privacy_docs, mtsamples_docs
+    return synthetic_docs, adversarial_docs, ai4privacy_docs
 
 
 def load_ai4privacy_sample(n: int) -> List:
@@ -119,7 +76,7 @@ def load_ai4privacy_sample(n: int) -> List:
     dataset = load_dataset("ai4privacy/pii-masking-200k", split="train")
     
     # Sample
-    indices = list(range(min(n * 2, len(dataset))))
+    indices = list(range(min(n * 2, len(dataset))))  # Get more than needed
     import random
     random.shuffle(indices)
     
@@ -130,9 +87,11 @@ def load_ai4privacy_sample(n: int) -> List:
         # Parse entities from the dataset format
         entities = []
         if "privacy_mask" in row and row["privacy_mask"]:
+            # AI4Privacy format has privacy_mask with entity info
             text = row.get("source_text", "")
             masks = row["privacy_mask"]
             
+            # Parse mask format (varies by dataset version)
             if isinstance(masks, list):
                 for mask in masks:
                     if isinstance(mask, dict):
@@ -143,7 +102,7 @@ def load_ai4privacy_sample(n: int) -> List:
                             entity_type=normalize_ai4privacy_type(mask.get("label", "UNKNOWN")),
                         ))
         
-        if entities:
+        if entities:  # Only include docs with entities
             docs.append(LabeledDocument(
                 id=f"ai4privacy_{idx}",
                 text=row.get("source_text", ""),
@@ -151,24 +110,6 @@ def load_ai4privacy_sample(n: int) -> List:
                 doc_type="ai4privacy",
                 metadata={"source": "ai4privacy"},
             ))
-    
-    return docs
-
-
-def load_mtsamples_sample(n: int) -> List:
-    """Load sample from MTSamples with PHI re-injection."""
-    from .mtsamples_loader import load_mtsamples_dataset, validate_dataset, get_dataset_stats
-    
-    # Load and process MTSamples
-    docs = load_mtsamples_dataset(
-        max_samples=n,
-        min_entities=0,  # Include docs without detected placeholders
-        validate=True,   # Strict validation
-    )
-    
-    # Log stats
-    stats = get_dataset_stats(docs)
-    logger.info(f"MTSamples stats: {stats}")
     
     return docs
 
@@ -208,27 +149,12 @@ def normalize_ai4privacy_type(label: str) -> str:
 def capture_signals_for_documents(
     docs: List,
     engine,
-    use_coreference: bool = True,
 ) -> List[Dict]:
-    """Run detection and capture signals for each document.
-    
-    NEW: Enriches signals with coreference information.
-    """
+    """Run detection and capture signals for each document."""
     from ..engine.classifier import SpanSignals
     
     console.print("\n[bold]Step 2: Capture Detection Signals[/bold]")
     console.print("─" * 50)
-    
-    # Import coreference if available
-    coref_resolver = None
-    if use_coreference:
-        try:
-            from ..engine.coreference import get_coreference_resolver
-            coref_resolver = get_coreference_resolver(device='cpu')
-            console.print("  Coreference resolver loaded ✓")
-        except Exception as e:
-            console.print(f"  [yellow]⚠ Coreference not available: {e}[/yellow]")
-            use_coreference = False
     
     all_signals = []
     
@@ -258,12 +184,6 @@ def capture_signals_for_documents(
             # Get captured signals
             signals = engine.get_captured_signals()
             
-            # Enrich with coreference (NEW)
-            if use_coreference and coref_resolver:
-                signals = enrich_signals_with_coreference(
-                    doc.text, signals, coref_resolver, doc
-                )
-            
             # Label signals against ground truth
             labeled_signals = label_signals(signals, doc)
             all_signals.extend(labeled_signals)
@@ -274,145 +194,14 @@ def capture_signals_for_documents(
     
     # Stats
     total = len(all_signals)
-    if total > 0:
-        positive = sum(1 for s in all_signals if s["ground_truth_type"] != "NONE")
-        negative = total - positive
-        
-        console.print(f"\n  Total signals captured: {total}")
-        console.print(f"  Positive (real entities): {positive} ({positive/total*100:.1f}%)")
-        console.print(f"  Negative (false positives): {negative} ({negative/total*100:.1f}%)")
-        
-        # Coreference stats
-        coref_signals = sum(1 for s in all_signals if s.get("in_coref_cluster", False))
-        console.print(f"  Signals in coref clusters: {coref_signals} ({coref_signals/total*100:.1f}%)")
-        
-        # Breakdown by source
-        from collections import Counter
-        sources = Counter(s.get("doc_type", "unknown") for s in all_signals)
-        console.print(f"\n  By source:")
-        for source, count in sources.most_common():
-            console.print(f"    {source}: {count}")
-    else:
-        console.print("\n  [yellow]No signals captured![/yellow]")
+    positive = sum(1 for s in all_signals if s["ground_truth_type"] != "NONE")
+    negative = total - positive
+    
+    console.print(f"\n  Total signals captured: {total}")
+    console.print(f"  Positive (real entities): {positive} ({positive/total*100:.1f}%)")
+    console.print(f"  Negative (false positives): {negative} ({negative/total*100:.1f}%)")
     
     return all_signals
-
-
-def enrich_signals_with_coreference(
-    text: str,
-    signals: List,
-    coref_resolver,
-    doc,
-) -> List:
-    """Enrich signals with coreference information and add new coref-derived signals."""
-    
-    # Common pronouns
-    PRONOUNS = {'he', 'she', 'they', 'him', 'her', 'them', 'his', 'hers', 'their'}
-    
-    try:
-        # Run coreference
-        coref_result = coref_resolver.resolve(text)
-        
-        # Build detected spans lookup
-        detected_spans = [
-            {
-                'start': s.span_start,
-                'end': s.span_end,
-                'text': s.span_text,
-                'entity_type': s.merged_type,
-                'confidence': s.merged_conf,
-            }
-            for s in signals
-        ]
-        
-        # Enrich with PHI info
-        coref_result = coref_resolver.enrich_with_phi(coref_result, detected_spans)
-        
-        # Update existing signals with coref info
-        for signal in signals:
-            key = (signal.span_start, signal.span_end)
-            
-            if key in coref_result.span_to_cluster:
-                cluster_id = coref_result.span_to_cluster[key]
-                cluster = coref_result.clusters[cluster_id]
-                
-                signal.in_coref_cluster = True
-                signal.coref_cluster_id = cluster_id
-                signal.coref_cluster_size = len(cluster.mentions)
-                signal.coref_anchor_type = cluster.anchor_type
-                signal.coref_anchor_conf = cluster.anchor_confidence
-                
-                # Check if this is the anchor
-                if cluster.anchor_span == key:
-                    signal.coref_is_anchor = True
-                
-                # Check if pronoun
-                if signal.span_text.lower() in PRONOUNS:
-                    signal.coref_is_pronoun = True
-        
-        # Get NEW spans from coreference (pronouns, references not originally detected)
-        new_coref_signals = []
-        detected_set = {(s.span_start, s.span_end) for s in signals}
-        
-        for cluster in coref_result.clusters:
-            # Skip clusters without PHI anchor
-            if cluster.anchor_type is None:
-                continue
-            
-            for mention_start, mention_end, mention_text in cluster.mentions:
-                key = (mention_start, mention_end)
-                
-                # Skip if already detected
-                if key in detected_set:
-                    continue
-                
-                # Skip if this IS the anchor
-                if cluster.anchor_span == key:
-                    continue
-                
-                # Create new signal for this coref mention
-                from ..engine.classifier import SpanSignals
-                new_signal = SpanSignals(
-                    span_start=mention_start,
-                    span_end=mention_end,
-                    span_text=mention_text,
-                    # No detector fired on this
-                    phi_bert_detected=False,
-                    pii_bert_detected=False,
-                    presidio_detected=False,
-                    rule_detected=False,
-                    # But it's in a coref cluster
-                    in_coref_cluster=True,
-                    coref_cluster_id=cluster.cluster_id,
-                    coref_cluster_size=len(cluster.mentions),
-                    coref_anchor_type=cluster.anchor_type,
-                    coref_anchor_conf=cluster.anchor_confidence,
-                    coref_is_anchor=False,
-                    coref_is_pronoun=mention_text.lower() in PRONOUNS,
-                    # Computed features
-                    span_length=len(mention_text),
-                    has_digits=any(c.isdigit() for c in mention_text),
-                    has_letters=any(c.isalpha() for c in mention_text),
-                    all_caps=mention_text.isupper() and any(c.isalpha() for c in mention_text),
-                    all_digits=mention_text.replace("-", "").replace(" ", "").isdigit(),
-                    mixed_case=(
-                        any(c.isupper() for c in mention_text) and 
-                        any(c.islower() for c in mention_text)
-                    ),
-                    # Inherit type from anchor
-                    merged_type=cluster.anchor_type or "",
-                    merged_conf=0.0,  # No direct detection
-                    merged_source="coreference",
-                )
-                new_coref_signals.append(new_signal)
-        
-        # Combine original signals with new coref signals
-        signals = list(signals) + new_coref_signals
-        
-    except Exception as e:
-        logger.warning(f"Coreference enrichment failed: {e}")
-    
-    return signals
 
 
 def label_signals(signals: List, doc) -> List[Dict]:
@@ -421,16 +210,9 @@ def label_signals(signals: List, doc) -> List[Dict]:
     
     # Build ground truth lookup with tolerance
     gt_lookup = {}
-    gt_coref_lookup = {}  # For coreference clusters
-    
     for entity in doc.entities:
         for offset in range(-2, 3):  # ±2 char tolerance
             gt_lookup[(entity.start + offset, entity.end + offset)] = entity.entity_type
-        
-        # Track coreference cluster info if available
-        if hasattr(entity, 'coref_cluster_id') and entity.coref_cluster_id is not None:
-            if entity.coref_cluster_id not in gt_coref_lookup:
-                gt_coref_lookup[entity.coref_cluster_id] = entity.entity_type
     
     for signal in signals:
         signal_dict = signal_to_dict(signal)
@@ -452,12 +234,11 @@ def label_signals(signals: List, doc) -> List[Dict]:
                 )
                 if overlap > 0.5:
                     signal_dict["ground_truth_type"] = entity.entity_type
-                    signal_dict["ground_truth_source"] = f"overlap_{overlap:.2f}"
+                    signal_dict["ground_truth_source"] = "overlap_match"
                     matched = True
                     break
             
             if not matched:
-                # This is a false positive (or a coref mention not in ground truth)
                 signal_dict["ground_truth_type"] = "NONE"
                 signal_dict["ground_truth_source"] = "no_match"
         
@@ -467,45 +248,25 @@ def label_signals(signals: List, doc) -> List[Dict]:
 
 
 def signal_to_dict(signal) -> Dict:
-    """Convert SpanSignals to dict, including coreference fields."""
+    """Convert SpanSignals to dictionary."""
     return {
         "id": signal.id,
         "span_start": signal.span_start,
         "span_end": signal.span_end,
         "span_text": signal.span_text,
-        
-        # Detector signals
         "phi_bert_detected": signal.phi_bert_detected,
         "phi_bert_conf": signal.phi_bert_conf,
         "phi_bert_type": signal.phi_bert_type,
-        
         "pii_bert_detected": signal.pii_bert_detected,
         "pii_bert_conf": signal.pii_bert_conf,
         "pii_bert_type": signal.pii_bert_type,
-        
         "presidio_detected": signal.presidio_detected,
         "presidio_conf": signal.presidio_conf,
         "presidio_type": signal.presidio_type,
-        
         "rule_detected": signal.rule_detected,
         "rule_conf": signal.rule_conf,
         "rule_type": signal.rule_type,
         "rule_has_checksum": signal.rule_has_checksum,
-        
-        "llm_verified": signal.llm_verified,
-        "llm_decision": signal.llm_decision,
-        "llm_conf": signal.llm_conf,
-        
-        # Coreference signals (NEW)
-        "in_coref_cluster": getattr(signal, 'in_coref_cluster', False),
-        "coref_cluster_id": getattr(signal, 'coref_cluster_id', None),
-        "coref_cluster_size": getattr(signal, 'coref_cluster_size', 0),
-        "coref_anchor_type": getattr(signal, 'coref_anchor_type', None),
-        "coref_anchor_conf": getattr(signal, 'coref_anchor_conf', 0.0),
-        "coref_is_anchor": getattr(signal, 'coref_is_anchor', False),
-        "coref_is_pronoun": getattr(signal, 'coref_is_pronoun', False),
-        
-        # Computed features
         "sources_agree_count": signal.sources_agree_count,
         "span_length": signal.span_length,
         "has_digits": signal.has_digits,
@@ -513,7 +274,6 @@ def signal_to_dict(signal) -> Dict:
         "all_caps": signal.all_caps,
         "all_digits": signal.all_digits,
         "mixed_case": signal.mixed_case,
-        
         "merged_type": signal.merged_type,
         "merged_conf": signal.merged_conf,
         "merged_source": signal.merged_source,
@@ -543,31 +303,22 @@ def train_meta_classifier(
     use_xgboost: bool = False,
     test_size: float = 0.2,
 ) -> Dict:
-    """Train the meta-classifier on labeled signals.
-    
-    NOW INCLUDES coreference features.
-    """
+    """Train the meta-classifier on labeled signals."""
     console.print("\n[bold]Step 3: Train Meta-Classifier[/bold]")
     console.print("─" * 50)
     
     import numpy as np
     from sklearn.model_selection import train_test_split
     from sklearn.ensemble import RandomForestClassifier
-    from sklearn.metrics import f1_score, precision_score, recall_score
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.metrics import classification_report, f1_score, precision_score, recall_score
     
-    # Prepare features - NOW INCLUDING COREFERENCE
+    # Prepare features
     feature_names = [
-        # Detector signals
         "phi_bert_detected", "phi_bert_conf",
         "pii_bert_detected", "pii_bert_conf",
         "presidio_detected", "presidio_conf",
         "rule_detected", "rule_conf", "rule_has_checksum",
-        
-        # Coreference signals (NEW)
-        "in_coref_cluster", "coref_cluster_size", "coref_anchor_conf",
-        "coref_is_anchor", "coref_is_pronoun", "coref_has_phi_anchor",
-        
-        # Computed features
         "sources_agree_count", "span_length",
         "has_digits", "has_letters", "all_caps", "all_digits", "mixed_case",
     ]
@@ -578,7 +329,6 @@ def train_meta_classifier(
     
     for s in signals:
         features = [
-            # Detector signals
             int(s["phi_bert_detected"]),
             s["phi_bert_conf"],
             int(s["pii_bert_detected"]),
@@ -588,16 +338,6 @@ def train_meta_classifier(
             int(s["rule_detected"]),
             s["rule_conf"],
             int(s["rule_has_checksum"]),
-            
-            # Coreference signals (NEW)
-            int(s.get("in_coref_cluster", False)),
-            s.get("coref_cluster_size", 0),
-            s.get("coref_anchor_conf", 0.0),
-            int(s.get("coref_is_anchor", False)),
-            int(s.get("coref_is_pronoun", False)),
-            int(s.get("coref_anchor_type") is not None),  # coref_has_phi_anchor
-            
-            # Computed features
             s["sources_agree_count"],
             s["span_length"],
             int(s["has_digits"]),
@@ -664,7 +404,7 @@ def train_meta_classifier(
     importances.sort(key=lambda x: -x[1])
     
     console.print(f"\n  [bold]Top Features:[/bold]")
-    for name, imp in importances[:8]:
+    for name, imp in importances[:5]:
         console.print(f"    {name}: {imp:.3f}")
     
     # Save model
@@ -692,8 +432,6 @@ def train_meta_classifier(
         "precision": precision,
         "recall": recall,
         "use_xgboost": use_xgboost,
-        "feature_count": len(feature_names),
-        "includes_coreference": True,
     }
     
     metadata_path = output_dir / "metadata.json"
@@ -705,19 +443,16 @@ def train_meta_classifier(
 
 def main():
     parser = argparse.ArgumentParser(description="Train meta-classifier")
-    parser.add_argument("--synthetic", type=int, default=2000, help="Number of synthetic docs")
+    parser.add_argument("--synthetic", type=int, default=3000, help="Number of synthetic docs")
     parser.add_argument("--adversarial", type=int, default=1000, help="Number of adversarial cases")
     parser.add_argument("--ai4privacy", type=int, default=1000, help="Number of AI4Privacy samples")
-    parser.add_argument("--mtsamples", type=int, default=1000, help="Number of MTSamples docs")
     parser.add_argument("--xgboost", action="store_true", help="Use XGBoost instead of RandomForest")
     parser.add_argument("--output", type=str, default=None, help="Output directory")
     parser.add_argument("--mock", action="store_true", help="Use mock model (for testing)")
-    parser.add_argument("--no-coref", action="store_true", help="Disable coreference enrichment")
     
     args = parser.parse_args()
     
     console.print("\n[bold cyan]═══ Meta-Classifier Training Pipeline ═══[/bold cyan]\n")
-    console.print("[dim]Now with coreference features![/dim]\n")
     
     # Output directory
     if args.output:
@@ -726,24 +461,15 @@ def main():
         from ..config import get_config
         output_dir = get_config().data_dir / "meta_classifier"
     
-    # Generate data from all sources
-    synthetic_docs, adversarial_docs, ai4privacy_docs, mtsamples_docs = generate_training_data(
+    # Generate data
+    synthetic_docs, adversarial_docs, ai4privacy_docs = generate_training_data(
         n_synthetic=args.synthetic,
         n_adversarial=args.adversarial,
         n_ai4privacy=args.ai4privacy,
-        n_mtsamples=args.mtsamples,
     )
     
-    all_docs = synthetic_docs + adversarial_docs + ai4privacy_docs + mtsamples_docs
+    all_docs = synthetic_docs + adversarial_docs + ai4privacy_docs
     console.print(f"\n  Total documents: {len(all_docs)}")
-    console.print(f"    Synthetic: {len(synthetic_docs)}")
-    console.print(f"    Adversarial: {len(adversarial_docs)}")
-    console.print(f"    AI4Privacy: {len(ai4privacy_docs)}")
-    console.print(f"    MTSamples: {len(mtsamples_docs)}")
-    
-    if len(all_docs) == 0:
-        console.print("[red]No documents to process![/red]")
-        return
     
     # Initialize engine
     console.print("\n  Initializing detection engine...")
@@ -751,22 +477,10 @@ def main():
     from ..engine.classifier import ClassificationEngine
     
     config = get_config()
-    engine = ClassificationEngine(
-        use_mock_model=args.mock, 
-        config=config,
-        use_coreference=not args.no_coref,
-    )
+    engine = ClassificationEngine(use_mock_model=args.mock, config=config)
     
-    # Capture signals (with coreference enrichment)
-    signals = capture_signals_for_documents(
-        all_docs, 
-        engine,
-        use_coreference=not args.no_coref,
-    )
-    
-    if len(signals) == 0:
-        console.print("[red]No signals captured! Check your detectors.[/red]")
-        return
+    # Capture signals
+    signals = capture_signals_for_documents(all_docs, engine)
     
     # Save signals for analysis
     signals_path = output_dir / "training_signals.json"
@@ -790,16 +504,10 @@ def main():
     table.add_column("Value", justify="right")
     
     table.add_row("Documents", str(len(all_docs)))
-    table.add_row("  - Synthetic", str(len(synthetic_docs)))
-    table.add_row("  - Adversarial", str(len(adversarial_docs)))
-    table.add_row("  - AI4Privacy", str(len(ai4privacy_docs)))
-    table.add_row("  - MTSamples", str(len(mtsamples_docs)))
     table.add_row("Signals", str(len(signals)))
-    table.add_row("Features", str(metrics['feature_count']))
     table.add_row("F1 Score", f"{metrics['f1']:.1%}")
     table.add_row("Precision", f"{metrics['precision']:.1%}")
     table.add_row("Recall", f"{metrics['recall']:.1%}")
-    table.add_row("Coreference", "Enabled" if not args.no_coref else "Disabled")
     table.add_row("Output", str(output_dir))
     
     console.print(table)

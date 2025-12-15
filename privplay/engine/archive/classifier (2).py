@@ -63,15 +63,6 @@ class SpanSignals:
     llm_decision: str = ""  # yes/no/uncertain
     llm_conf: float = 0.0
     
-    # Coreference signals (NEW)
-    in_coref_cluster: bool = False
-    coref_cluster_id: Optional[int] = None
-    coref_cluster_size: int = 0
-    coref_anchor_type: Optional[str] = None  # PHI type of anchor mention
-    coref_anchor_conf: float = 0.0  # Confidence of anchor mention
-    coref_is_anchor: bool = False  # Is this span the anchor itself?
-    coref_is_pronoun: bool = False  # Is this span a pronoun (he/she/they)?
-    
     # Computed features
     sources_agree_count: int = 0
     span_length: int = 0
@@ -93,7 +84,6 @@ class SpanSignals:
     def to_feature_dict(self) -> Dict[str, Any]:
         """Convert to feature dict for ML model."""
         return {
-            # Detector signals
             "phi_bert_detected": int(self.phi_bert_detected),
             "phi_bert_conf": self.phi_bert_conf,
             "pii_bert_detected": int(self.pii_bert_detected),
@@ -105,16 +95,6 @@ class SpanSignals:
             "rule_has_checksum": int(self.rule_has_checksum),
             "llm_verified": int(self.llm_verified),
             "llm_conf": self.llm_conf,
-            
-            # Coreference signals (NEW)
-            "in_coref_cluster": int(self.in_coref_cluster),
-            "coref_cluster_size": self.coref_cluster_size,
-            "coref_anchor_conf": self.coref_anchor_conf,
-            "coref_is_anchor": int(self.coref_is_anchor),
-            "coref_is_pronoun": int(self.coref_is_pronoun),
-            "coref_has_phi_anchor": int(self.coref_anchor_type is not None),
-            
-            # Computed features
             "sources_agree_count": self.sources_agree_count,
             "span_length": self.span_length,
             "has_digits": int(self.has_digits),
@@ -134,7 +114,6 @@ class ClassificationEngine:
     - PII BERT (trained on AI4Privacy, general PII)
     - Presidio (Microsoft PII detector)
     - Rule-based detection (regex + validation)
-    - Coreference resolution (FastCoref)
     - LLM verification (for uncertain cases)
     
     Signal capture mode stores all detector outputs for meta-classifier training.
@@ -150,7 +129,6 @@ class ClassificationEngine:
         config: Optional[Config] = None,
         use_mock_model: bool = False,
         capture_signals: bool = False,
-        use_coreference: bool = True,
     ):
         self.config = config or get_config()
         
@@ -175,24 +153,9 @@ class ClassificationEngine:
                 score_threshold=self.config.presidio.score_threshold
             )
         
-        # Coreference resolver (lazy loaded)
-        self.use_coreference = use_coreference
-        self._coref_resolver = None
-        
         # Signal capture for meta-classifier training
         self.capture_signals = capture_signals
         self.captured_signals: List[SpanSignals] = []
-    
-    def _get_coref_resolver(self):
-        """Lazy load coreference resolver."""
-        if self._coref_resolver is None and self.use_coreference:
-            try:
-                from .coreference import CoreferenceResolver
-                self._coref_resolver = CoreferenceResolver(device='cpu')
-            except Exception as e:
-                logger.warning(f"Failed to load coreference resolver: {e}")
-                self.use_coreference = False
-        return self._coref_resolver
     
     def detect(
         self, 
@@ -225,10 +188,6 @@ class ClassificationEngine:
             text, phi_entities, pii_entities, presidio_entities, rule_entities
         )
         
-        # Run coreference to find additional mentions
-        if self.use_coreference:
-            entities = self._enrich_with_coreference(text, entities)
-        
         # Apply allowlist
         entities = self._apply_allowlist(entities)
         
@@ -237,103 +196,6 @@ class ClassificationEngine:
             entities = self._verify_uncertain(entities, text, threshold)
         
         return entities
-    
-    def _enrich_with_coreference(
-        self, 
-        text: str, 
-        entities: List[Entity]
-    ) -> List[Entity]:
-        """
-        Use coreference to find additional PHI mentions.
-        
-        If "John Smith" is detected, also flag "He", "the patient", "Mr. Smith".
-        """
-        resolver = self._get_coref_resolver()
-        if resolver is None:
-            return entities
-        
-        try:
-            from .coreference import CorefResult
-            
-            # Run coreference
-            coref_result = resolver.resolve(text)
-            
-            # Build detected spans lookup
-            detected_spans = [
-                {
-                    'start': e.start,
-                    'end': e.end,
-                    'text': e.text,
-                    'entity_type': e.entity_type.value if hasattr(e.entity_type, 'value') else str(e.entity_type),
-                    'confidence': e.confidence,
-                }
-                for e in entities
-            ]
-            
-            # Enrich with PHI info
-            coref_result = resolver.enrich_with_phi(coref_result, detected_spans)
-            
-            # Get new spans from coreference
-            new_spans = resolver.get_additional_phi_spans(coref_result, detected_spans)
-            
-            # Convert to Entity objects
-            for span in new_spans:
-                # Determine entity type from anchor
-                anchor_type = span.get('coref_anchor_type', 'OTHER')
-                try:
-                    entity_type = EntityType(anchor_type)
-                except ValueError:
-                    entity_type = EntityType.OTHER
-                
-                new_entity = Entity(
-                    text=span['text'],
-                    start=span['start'],
-                    end=span['end'],
-                    entity_type=entity_type,
-                    confidence=span.get('coref_anchor_conf', 0.5) * 0.8,  # Slightly lower conf
-                    source=SourceType.MERGED,
-                )
-                # Mark as coreference-derived
-                new_entity._detector = "coreference"
-                new_entity._coref_cluster_id = span.get('coref_cluster_id')
-                entities.append(new_entity)
-            
-            # Update captured signals with coref info
-            if self.capture_signals:
-                self._update_signals_with_coref(coref_result, text)
-            
-            logger.debug(f"Coreference added {len(new_spans)} entities")
-            
-        except Exception as e:
-            logger.warning(f"Coreference enrichment failed: {e}")
-        
-        return entities
-    
-    def _update_signals_with_coref(self, coref_result, text: str):
-        """Update captured signals with coreference information."""
-        # Common pronouns
-        PRONOUNS = {'he', 'she', 'they', 'him', 'her', 'them', 'his', 'hers', 'their'}
-        
-        for signals in self.captured_signals:
-            key = (signals.span_start, signals.span_end)
-            
-            if key in coref_result.span_to_cluster:
-                cluster_id = coref_result.span_to_cluster[key]
-                cluster = coref_result.clusters[cluster_id]
-                
-                signals.in_coref_cluster = True
-                signals.coref_cluster_id = cluster_id
-                signals.coref_cluster_size = len(cluster.mentions)
-                signals.coref_anchor_type = cluster.anchor_type
-                signals.coref_anchor_conf = cluster.anchor_confidence
-                
-                # Check if this is the anchor
-                if cluster.anchor_span == key:
-                    signals.coref_is_anchor = True
-                
-                # Check if pronoun
-                if signals.span_text.lower() in PRONOUNS:
-                    signals.coref_is_pronoun = True
     
     def _run_phi_model(self, text: str) -> List[Entity]:
         """Run Stanford PHI model."""
@@ -352,31 +214,28 @@ class ClassificationEngine:
     
     def _run_pii_model(self, text: str) -> List[Entity]:
         """Run PII BERT model."""
-        if not self.pii_model:
+        if not self.pii_model or not self.pii_model.is_available():
             return []
         
         try:
             entities = self.pii_model.detect(text)
-            # Mark source
+            # Mark source as PII_MODEL to distinguish from PHI model
             for e in entities:
-                e._detector = "pii_bert"
-            # Filter OTHER if configured
-            if FILTER_ALL_OTHER:
-                entities = [e for e in entities if e.entity_type != EntityType.OTHER]
+                e.source = SourceType.MODEL  # Could add PII_MODEL to SourceType
             return entities
         except Exception as e:
             logger.error(f"PII model failed: {e}")
             return []
     
     def _run_presidio(self, text: str) -> List[Entity]:
-        """Run Microsoft Presidio."""
+        """Run Presidio PII detection."""
         if not self.presidio:
             return []
         
         try:
             entities = self.presidio.detect(text)
-            for e in entities:
-                e._detector = "presidio"
+            if FILTER_ALL_OTHER:
+                entities = [e for e in entities if e.entity_type != EntityType.OTHER]
             return entities
         except Exception as e:
             logger.error(f"Presidio failed: {e}")
@@ -384,14 +243,8 @@ class ClassificationEngine:
     
     def _run_rules(self, text: str) -> List[Entity]:
         """Run rule-based detection."""
-        if not self.rules:
-            return []
-        
         try:
-            entities = self.rules.detect(text)
-            for e in entities:
-                e._detector = "rule"
-            return entities
+            return self.rules.detect(text)
         except Exception as e:
             logger.error(f"Rules failed: {e}")
             return []
@@ -405,33 +258,60 @@ class ClassificationEngine:
         rule_entities: List[Entity],
     ) -> List[Entity]:
         """
-        Merge entities from all detectors.
+        Merge entities from all sources using tiered authority model.
         
-        Handles overlapping spans and conflicting types.
+        If capture_signals is enabled, stores all signals for each span.
         """
-        # Tag source on entities
+        # Collect all entities with source tags
+        all_entities = []
+        
         for e in phi_entities:
             e._detector = "phi_bert"
+            all_entities.append(e)
         
-        # Combine all entities
-        all_entities = phi_entities + pii_entities + presidio_entities + rule_entities
+        for e in pii_entities:
+            e._detector = "pii_bert"
+            all_entities.append(e)
+        
+        for e in presidio_entities:
+            e._detector = "presidio"
+            all_entities.append(e)
+        
+        for e in rule_entities:
+            e._detector = "rule"
+            all_entities.append(e)
         
         if not all_entities:
             return []
         
         # Sort by start position
-        all_entities.sort(key=lambda e: (e.start, -e.end))
+        all_entities.sort(key=lambda e: (e.start, -e.confidence))
         
-        # Merge overlapping entities
         merged = []
         i = 0
+        
         while i < len(all_entities):
-            # Collect all overlapping with current
-            overlapping = [all_entities[i]]
+            current = all_entities[i]
+            
+            # Find overlapping entities
+            overlapping = [current]
             j = i + 1
+            
             while j < len(all_entities):
-                if all_entities[j].start < overlapping[0].end:
-                    overlapping.append(all_entities[j])
+                next_entity = all_entities[j]
+                if next_entity.start < current.end:
+                    overlapping.append(next_entity)
+                    # Extend current span if next entity extends beyond
+                    if next_entity.end > current.end:
+                        current = Entity(
+                            text=text[current.start:next_entity.end],
+                            start=current.start,
+                            end=next_entity.end,
+                            entity_type=current.entity_type,
+                            confidence=current.confidence,
+                            source=current.source,
+                        )
+                        current._detector = overlapping[0]._detector
                     j += 1
                 else:
                     break
@@ -641,10 +521,6 @@ class ClassificationEngine:
             "rules": {
                 "enabled": True,
                 "rule_count": len(self.rules.rules) if self.rules else 0,
-            },
-            "coreference": {
-                "enabled": self.use_coreference,
-                "available": self._coref_resolver is not None,
             },
             "verifier": {
                 "provider": getattr(self.verifier, "provider", "unknown") if self.verifier else None,

@@ -117,10 +117,9 @@ def train_run(
     synthetic: int = typer.Option(2000, "--synthetic", "-s", help="Number of synthetic clinical notes"),
     adversarial: int = typer.Option(1000, "--adversarial", "-a", help="Number of adversarial cases"),
     ai4privacy: int = typer.Option(1000, "--ai4privacy", "-p", help="Number of AI4Privacy samples"),
-    mtsamples: int = typer.Option(0, "--mtsamples", "-m", help="Number of MTSamples docs"),
+    mtsamples: int = typer.Option(1000, "--mtsamples", "-m", help="Number of MTSamples docs"),
     xgboost: bool = typer.Option(False, "--xgboost", "-x", help="Use XGBoost instead of RandomForest"),
     mock: bool = typer.Option(False, "--mock", help="Use mock model (for testing)"),
-    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference enrichment"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
 ):
@@ -130,12 +129,11 @@ def train_run(
     This is the main training command that:
     1. Generates/loads training data from all sources
     2. Runs detectors and captures signals
-    3. Enriches signals with coreference features
-    4. Labels signals against ground truth
-    5. Trains the meta-classifier
+    3. Labels signals against ground truth
+    4. Trains the meta-classifier
     
     Example:
-        phi-train train run --synthetic 3000 --adversarial 1000 --ai4privacy 1000 --xgboost
+        phi-train train run --synthetic 2000 --adversarial 1000 --ai4privacy 1000 --mtsamples 1000
     """
     init_app(data_dir)
     
@@ -146,8 +144,6 @@ def train_run(
     )
     
     console.print("\n[bold cyan]═══ Meta-Classifier Training Pipeline ═══[/bold cyan]\n")
-    if not no_coref:
-        console.print("[dim]With coreference enrichment enabled[/dim]\n")
     
     # Output directory
     if output:
@@ -178,18 +174,10 @@ def train_run(
     # Initialize engine
     console.print("\n  Initializing detection engine...")
     config = get_config()
-    engine = ClassificationEngine(
-        use_mock_model=mock, 
-        config=config,
-        use_coreference=not no_coref,
-    )
+    engine = ClassificationEngine(use_mock_model=mock, config=config)
     
-    # Capture signals (with coreference enrichment)
-    signals = capture_signals_for_documents(
-        all_docs, 
-        engine,
-        use_coreference=not no_coref,
-    )
+    # Capture signals
+    signals = capture_signals_for_documents(all_docs, engine)
     
     if len(signals) == 0:
         console.print("[red]No signals captured! Check your detectors.[/red]")
@@ -222,11 +210,9 @@ def train_run(
     table.add_row("  - AI4Privacy", str(len(ai4privacy_docs)))
     table.add_row("  - MTSamples", str(len(mtsamples_docs)))
     table.add_row("Signals", str(len(signals)))
-    table.add_row("Features", str(metrics.get('feature_count', 'N/A')))
     table.add_row("F1 Score", f"{metrics['f1']:.1%}")
     table.add_row("Precision", f"{metrics['precision']:.1%}")
     table.add_row("Recall", f"{metrics['recall']:.1%}")
-    table.add_row("Coreference", "Enabled" if not no_coref else "Disabled")
     table.add_row("Output", str(output_dir))
     
     console.print(table)
@@ -238,7 +224,6 @@ def train_synthetic_only(
     n: int = typer.Option(3000, "--count", "-n", help="Number of documents"),
     xgboost: bool = typer.Option(False, "--xgboost", "-x", help="Use XGBoost"),
     mock: bool = typer.Option(False, "--mock", help="Use mock model"),
-    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
 ):
@@ -246,6 +231,7 @@ def train_synthetic_only(
     init_app(data_dir)
     
     # Delegate to main train command with only synthetic
+    ctx = typer.Context(train_run)
     train_run(
         synthetic=n,
         adversarial=0,
@@ -253,7 +239,6 @@ def train_synthetic_only(
         mtsamples=0,
         xgboost=xgboost,
         mock=mock,
-        no_coref=no_coref,
         output=output,
         data_dir=data_dir,
     )
@@ -262,7 +247,6 @@ def train_synthetic_only(
 @train_app.command("quick")
 def train_quick(
     mock: bool = typer.Option(False, "--mock", help="Use mock model"),
-    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
 ):
     """Quick training with small sample sizes (for testing pipeline)."""
@@ -272,10 +256,9 @@ def train_quick(
         synthetic=500,
         adversarial=200,
         ai4privacy=200,
-        mtsamples=0,
+        mtsamples=100,
         xgboost=False,
         mock=mock,
-        no_coref=no_coref,
         output=None,
         data_dir=data_dir,
     )
@@ -284,7 +267,6 @@ def train_quick(
 @train_app.command("full")
 def train_full(
     xgboost: bool = typer.Option(True, "--xgboost/--no-xgboost", help="Use XGBoost"),
-    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
 ):
     """Full training with recommended sample sizes."""
@@ -294,10 +276,9 @@ def train_full(
         synthetic=3000,
         adversarial=1000,
         ai4privacy=1000,
-        mtsamples=0,
+        mtsamples=1000,
         xgboost=xgboost,
         mock=False,
-        no_coref=no_coref,
         output=None,
         data_dir=data_dir,
     )
