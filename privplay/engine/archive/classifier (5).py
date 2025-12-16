@@ -474,12 +474,6 @@ class ClassificationEngine:
             
             # Merge overlapping entities
             result = self._merge_overlapping(overlapping, text)
-            
-            # Meta-classifier may reject the entity (return None)
-            if result is None:
-                i = j
-                continue
-            
             merged.append(result)
             
             # Capture signals if enabled
@@ -569,12 +563,6 @@ class ClassificationEngine:
         if self._meta_classifier and self._meta_classifier.is_trained():
             signals = self._build_signals(entities, entities[0], text)
             is_entity, entity_type, confidence = self._meta_classifier.predict(signals)
-            
-            if not is_entity:
-                # Meta-classifier says this is NOT an entity - reject it
-                # But only if confidence is high enough (avoid rejecting uncertain cases)
-                if confidence < 0.4:  # Model is confident this is NOT an entity
-                    return None
             
             if is_entity:
                 # Use the best span from overlapping entities

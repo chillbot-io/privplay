@@ -53,6 +53,7 @@ class EntityType(str, Enum):
     # HIPAA Identifiers (additional)
     VIN = "VIN"                           # Vehicle Identification Number (#12)
     UDI = "UDI"                           # Unique Device Identifier (#13)
+    CRYPTO_ADDRESS = "CRYPTO_ADDRESS"     # Bitcoin, Ethereum, Litecoin addresses
     HEALTH_PLAN_ID = "HEALTH_PLAN_ID"     # Health plan beneficiary number (#9)
     DEA_NUMBER = "DEA_NUMBER"             # DEA registration number (#11)
     MEDICAL_LICENSE = "MEDICAL_LICENSE"   # State medical license (#11)

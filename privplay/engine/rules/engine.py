@@ -518,7 +518,7 @@ class RuleEngine:
         self.add_rule(Rule(
             name="bitcoin_address",
             pattern=re.compile(r'\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b'),
-            entity_type=EntityType.OTHER,
+            entity_type=EntityType.CRYPTO_ADDRESS,
             confidence=0.90,
         ))
         
@@ -526,7 +526,7 @@ class RuleEngine:
         self.add_rule(Rule(
             name="bitcoin_bech32",
             pattern=re.compile(r'\bbc1[a-zA-HJ-NP-Z0-9]{39,59}\b'),
-            entity_type=EntityType.OTHER,
+            entity_type=EntityType.CRYPTO_ADDRESS,
             confidence=0.92,
         ))
         
@@ -534,8 +534,24 @@ class RuleEngine:
         self.add_rule(Rule(
             name="ethereum_address",
             pattern=re.compile(r'\b0x[a-fA-F0-9]{40}\b'),
-            entity_type=EntityType.OTHER,
+            entity_type=EntityType.CRYPTO_ADDRESS,
             confidence=0.95,
+        ))
+        
+        # Crypto - Litecoin address (L, M, or 3 prefix, or ltc1 for bech32)
+        self.add_rule(Rule(
+            name="litecoin_address",
+            pattern=re.compile(r'\b[LM3][a-km-zA-HJ-NP-Z1-9]{26,33}\b'),
+            entity_type=EntityType.CRYPTO_ADDRESS,
+            confidence=0.90,
+        ))
+        
+        # Crypto - Litecoin Bech32 (ltc1)
+        self.add_rule(Rule(
+            name="litecoin_bech32",
+            pattern=re.compile(r'\bltc1[a-zA-HJ-NP-Z0-9]{39,59}\b'),
+            entity_type=EntityType.CRYPTO_ADDRESS,
+            confidence=0.92,
         ))
         
         # =================================================================

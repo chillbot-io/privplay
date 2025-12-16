@@ -119,6 +119,7 @@ TYPE_MAPPING: Dict[str, Optional[str]] = {
     "BITCOINADDRESS": "CRYPTO",
     "LITECOINADDRESS": "CRYPTO",
     "ETHEREUMADDRESS": "CRYPTO",
+    "CRYPTO_ADDRESS": "CRYPTO",  # Our detector's output type
     
     # === AGE (PII under HIPAA if >89) ===
     "AGE": "AGE",
@@ -487,8 +488,8 @@ class NervaluateBenchmarkRunner:
                 end=ent.end,
             ))
         
-        # Run detection
-        detected = self.engine.detect(sample.text)
+        # Run detection (no LLM verification during benchmarking - too slow)
+        detected = self.engine.detect(sample.text, verify=False)
         
         # Convert predictions to nervaluate format
         pred_entities = []
