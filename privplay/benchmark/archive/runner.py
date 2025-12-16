@@ -25,152 +25,32 @@ console = Console()
 # =============================================================================
 # These groups define which entity types should be considered "equivalent"
 # when comparing detected entities to ground truth. This prevents artificial
-# FP/FN counts from taxonomy differences between annotation schemes.
-#
-# Following standard practice in NER evaluation (John Snow Labs, 2025; 
-# Holmes et al., 2023), we use relaxed type matching to account for 
-# schema variations across datasets (e.g., AI4Privacy vs HIPAA Safe Harbor).
+# FP/FN counts from slight type variations (e.g., NAME_PERSON vs NAME_PATIENT).
 
 TYPE_COMPATIBILITY_GROUPS = [
-    # =========================================================================
-    # NAME - All person name variants
-    # =========================================================================
-    {
-        # Our types
-        "NAME_PERSON", "NAME_PATIENT", "NAME_PROVIDER", "NAME_RELATIVE",
-        # AI4Privacy types
-        "FIRSTNAME", "LASTNAME", "FULLNAME", "NAME", "MIDDLENAME",
-        "PREFIX", "SUFFIX", "TITLE",
-        # Common variants
-        "PERSON", "PATIENT", "DOCTOR", "PROVIDER",
-    },
+    # Name types - all represent a person's name
+    {"NAME_PERSON", "NAME_PATIENT", "NAME_PROVIDER", "NAME_RELATIVE"},
     
-    # =========================================================================
-    # DATE - All temporal types
-    # =========================================================================
-    {
-        # Our types
-        "DATE", "DATE_DOB", "DATE_ADMISSION", "DATE_DISCHARGE",
-        # AI4Privacy types  
-        "DOB", "DATEOFBIRTH", "BIRTHDATE",
-        # Common variants
-        "TIME", "DATETIME", "TIMESTAMP", "AGE",
-    },
+    # Date types - all represent dates
+    {"DATE", "DATE_DOB", "DATE_ADMISSION", "DATE_DISCHARGE"},
     
-    # =========================================================================
-    # ADDRESS/LOCATION - Physical addresses and locations
-    # =========================================================================
-    {
-        # Our types
-        "ADDRESS", "ZIP", "LOCATION",
-        # AI4Privacy types
-        "STREETADDRESS", "STREET", "CITY", "STATE", "ZIPCODE", "POSTALCODE",
-        "COUNTRY", "COUNTY", "BUILDING", "BUILDINGNUMBER",
-        # Common variants
-        "ADDR", "GEO", "PLACE", "REGION",
-    },
+    # Address/location types
+    {"ADDRESS", "ZIP", "LOCATION"},
     
-    # =========================================================================
-    # PHONE/CONTACT - Phone numbers and similar contact info
-    # =========================================================================
-    {
-        # Our types
-        "PHONE", "FAX",
-        # AI4Privacy types
-        "PHONENUMBER", "TELEPHONE", "MOBILE", "CELL", "FAXNUMBER",
-        # Common variants
-        "TEL", "CONTACT_NUMBER",
-    },
+    # Account/ID types
+    {"ACCOUNT_NUMBER", "BANK_ACCOUNT", "MRN", "HEALTH_PLAN_ID"},
     
-    # =========================================================================
-    # EMAIL - Email addresses
-    # =========================================================================
-    {
-        "EMAIL", "EMAILADDRESS", "E-MAIL",
-    },
+    # Healthcare facility types
+    {"FACILITY", "HOSPITAL"},
     
-    # =========================================================================
-    # SSN - Social Security Numbers
-    # =========================================================================
-    {
-        "SSN", "SOCIALSECURITYNUMBER", "SOCIAL_SECURITY",
-    },
+    # Insurance/payer types
+    {"HEALTH_PLAN", "HEALTH_PLAN_ID"},
     
-    # =========================================================================
-    # CREDIT_CARD - Credit/debit card numbers
-    # =========================================================================
-    {
-        "CREDIT_CARD", "CREDITCARD", "CREDITCARDNUMBER", 
-        "CC", "CARDNUMBER", "DEBITCARD",
-    },
+    # Device identifiers
+    {"DEVICE_ID", "VIN", "UDI", "MAC_ADDRESS"},
     
-    # =========================================================================
-    # IP_ADDRESS - Network identifiers
-    # =========================================================================
-    {
-        "IP_ADDRESS", "IP", "IPADDRESS", "IPV4", "IPV6",
-        "MAC_ADDRESS", "MACADDRESS",
-    },
-    
-    # =========================================================================
-    # URL - Web addresses
-    # =========================================================================
-    {
-        "URL", "WEBSITE", "WEBADDRESS", "URI", "LINK",
-    },
-    
-    # =========================================================================
-    # USERNAME/PASSWORD - Credentials
-    # =========================================================================
-    {
-        "USERNAME", "USER", "USERID", "LOGIN", "HANDLE",
-        "PASSWORD", "PASS", "PIN", "PASSCODE", "SECRET",
-    },
-    
-    # =========================================================================
-    # ACCOUNT/ID - Various account and ID numbers
-    # =========================================================================
-    {
-        # Our types
-        "ACCOUNT_NUMBER", "BANK_ACCOUNT", "MRN", "HEALTH_PLAN_ID",
-        # AI4Privacy types
-        "ACCOUNTNUMBER", "BANKACCOUNT", "IBAN", "BIC", "SWIFT",
-        "DRIVERSLICENSE", "PASSPORT", "NATIONALID", "TAXID",
-        # Common variants
-        "ID", "IDNUMBER", "MEMBERID", "POLICYID", "CLAIMID",
-        "MEDICAL_RECORD", "RECORD_NUMBER",
-    },
-    
-    # =========================================================================
-    # FACILITY - Healthcare facilities and organizations
-    # =========================================================================
-    {
-        "FACILITY", "HOSPITAL", "CLINIC", "ORGANIZATION", "ORG",
-        "COMPANY", "EMPLOYER", "INSTITUTION", "DEPARTMENT",
-    },
-    
-    # =========================================================================
-    # DEVICE - Device identifiers
-    # =========================================================================
-    {
-        "DEVICE_ID", "VIN", "UDI", "SERIAL", "SERIALNUMBER",
-        "IMEI", "LICENSE_PLATE", "PLATE",
-    },
-    
-    # =========================================================================
-    # FINANCIAL - Financial information
-    # =========================================================================
-    {
-        "SALARY", "INCOME", "AMOUNT", "MONEY", "CURRENCY",
-        "PRICE", "COST", "BALANCE",
-    },
-    
-    # =========================================================================
-    # OTHER/MISC - Catch-all for misc PII
-    # =========================================================================
-    {
-        "OTHER", "MISC", "UNKNOWN", "PII", "PHI", "SENSITIVE",
-    },
+    # Phone/fax (both are phone numbers)
+    {"PHONE", "FAX"},
 ]
 
 
@@ -185,67 +65,14 @@ def types_are_compatible(type1: str, type2: str) -> bool:
     Returns:
         True if types are exact match or in same compatibility group
     """
-    # Normalize types for comparison
-    t1 = type1.upper().replace("_", "").replace("-", "").replace(" ", "")
-    t2 = type2.upper().replace("_", "").replace("-", "").replace(" ", "")
-    
-    if t1 == t2:
-        return True
-    
-    # Also check original forms
-    if type1.upper() == type2.upper():
+    if type1 == type2:
         return True
     
     for group in TYPE_COMPATIBILITY_GROUPS:
-        # Normalize group entries for matching
-        normalized_group = {s.upper().replace("_", "") for s in group}
-        if t1 in normalized_group and t2 in normalized_group:
-            return True
-        # Also check original forms
-        if type1.upper() in group and type2.upper() in group:
+        if type1 in group and type2 in group:
             return True
     
     return False
-
-
-def get_canonical_type(entity_type: str) -> str:
-    """
-    Get canonical type name for reporting.
-    
-    Maps all variants to a standard name for cleaner reports.
-    """
-    t = entity_type.upper().replace("_", "")
-    
-    # Name variants -> NAME
-    if t in {"NAMEPERSON", "NAMEPATIENT", "NAMEPROVIDER", "NAMERELATIVE",
-             "FIRSTNAME", "LASTNAME", "FULLNAME", "NAME", "MIDDLENAME",
-             "PERSON", "PATIENT", "DOCTOR", "PROVIDER"}:
-        return "NAME"
-    
-    # Date variants -> DATE
-    if t in {"DATE", "DATEDOB", "DATEADMISSION", "DATEDISCHARGE",
-             "DOB", "DATEOFBIRTH", "BIRTHDATE", "TIME", "DATETIME", "AGE"}:
-        return "DATE"
-    
-    # Address variants -> ADDRESS
-    if t in {"ADDRESS", "ZIP", "LOCATION", "STREETADDRESS", "STREET",
-             "CITY", "STATE", "ZIPCODE", "POSTALCODE", "COUNTRY"}:
-        return "ADDRESS"
-    
-    # Phone variants -> PHONE
-    if t in {"PHONE", "FAX", "PHONENUMBER", "TELEPHONE", "MOBILE", "CELL"}:
-        return "PHONE"
-    
-    # Keep specific types as-is
-    if t in {"EMAIL", "SSN", "CREDITCARD", "IPADDRESS", "URL", "MRN"}:
-        return entity_type.upper().replace("_", "")
-    
-    # Account/ID -> ID  
-    if t in {"ACCOUNTNUMBER", "BANKACCOUNT", "HEALTHPLANID", "IBAN", 
-             "DRIVERSLICENSE", "PASSPORT", "NATIONALID", "IDNUMBER"}:
-        return "ID"
-    
-    return entity_type.upper()
 
 
 @dataclass
@@ -758,6 +585,14 @@ def capture_benchmark_errors(
     - False Positives → REJECTED (model incorrectly flagged non-PHI)
     
     This creates balanced training data for fine-tuning.
+    
+    Args:
+        result: Benchmark result with sample_results
+        dataset: Original dataset (for sample text)
+        db: Database instance (uses default if None)
+        
+    Returns:
+        Dict with counts: {'documents': n, 'tps_captured': n, 'fps_captured': n, 'fns_skipped': n}
     """
     from ..db import get_db
     from ..types import Document, Entity, Correction, EntityType, DecisionType, SourceType
@@ -766,6 +601,7 @@ def capture_benchmark_errors(
     if db is None:
         db = get_db()
     
+    # Build sample lookup
     sample_lookup = {s.id: s for s in dataset.samples}
     
     docs_created = 0
@@ -778,14 +614,17 @@ def capture_benchmark_errors(
         if not sample:
             continue
         
+        # Get all match types
         tps = [m for m in sample_result.matches if m.match_type == "true_positive"]
         fps = [m for m in sample_result.matches if m.match_type == "false_positive"]
         fns = [m for m in sample_result.matches if m.match_type == "false_negative"]
         
+        # Skip samples with no detections we can learn from
         if not tps and not fps:
             fns_skipped += len(fns)
             continue
         
+        # Create document for this sample
         doc = Document(
             id=f"bench_{sample.id}",
             content=sample.text,
@@ -796,10 +635,16 @@ def capture_benchmark_errors(
             db.add_document(doc)
             docs_created += 1
         except Exception:
+            # Document may already exist from previous run
             pass
         
+        # Capture TRUE POSITIVES as CONFIRMED
+        # These are cases where our model correctly detected PHI
         for match in tps:
             detected = match.detected
+            ground_truth = match.ground_truth
+            
+            # Create entity record
             entity = Entity(
                 id=str(uuid.uuid4()),
                 text=detected.text,
@@ -815,9 +660,11 @@ def capture_benchmark_errors(
             except Exception:
                 pass
             
+            # Get context
             ctx_start = max(0, detected.start - 50)
             ctx_end = min(len(sample.text), detected.end + 50)
             
+            # Create CONFIRMED correction
             correction = Correction(
                 id=str(uuid.uuid4()),
                 entity_id=entity.id,
@@ -827,7 +674,7 @@ def capture_benchmark_errors(
                 entity_end=detected.end,
                 detected_type=detected.entity_type,
                 decision=DecisionType.CONFIRMED,
-                correct_type=None,
+                correct_type=None,  # Type was correct
                 context_before=sample.text[ctx_start:detected.start],
                 context_after=sample.text[detected.end:ctx_end],
                 ner_confidence=detected.confidence,
@@ -839,8 +686,12 @@ def capture_benchmark_errors(
             except Exception as e:
                 logger.warning(f"Failed to add TP correction: {e}")
         
+        # Capture FALSE POSITIVES as REJECTED
+        # These are cases where our model incorrectly flagged non-PHI
         for match in fps:
             detected = match.detected
+            
+            # Create entity record
             entity = Entity(
                 id=str(uuid.uuid4()),
                 text=detected.text,
@@ -856,9 +707,11 @@ def capture_benchmark_errors(
             except Exception:
                 pass
             
+            # Get context
             ctx_start = max(0, detected.start - 50)
             ctx_end = min(len(sample.text), detected.end + 50)
             
+            # Create REJECTED correction
             correction = Correction(
                 id=str(uuid.uuid4()),
                 entity_id=entity.id,
@@ -895,7 +748,22 @@ def capture_benchmark_signals(
     dataset: BenchmarkDataset,
     engine: ClassificationEngine,
 ) -> dict:
-    """Capture SpanSignals with ground truth from benchmark results."""
+    """
+    Capture SpanSignals with ground truth from benchmark results.
+    
+    Creates training data for meta-classifier by:
+    1. Re-running detection with signal capture enabled
+    2. Matching signals to benchmark ground truth
+    3. Labeling as TP (entity type) or FP ("NONE")
+    
+    Args:
+        result: Benchmark result with sample_results
+        dataset: Original dataset
+        engine: Classification engine
+        
+    Returns:
+        Dict with capture stats
+    """
     from ..training.signals_storage import get_signals_storage
     
     storage = get_signals_storage()
@@ -921,6 +789,7 @@ def capture_benchmark_signals(
         
         doc_id = f"bench_{sample.id}"
         
+        # Build ground truth lookup with tolerance
         ground_truth_spans = {}
         for gt in sample.annotations:
             for offset in range(-2, 3):

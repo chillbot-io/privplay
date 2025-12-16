@@ -153,6 +153,32 @@ class CoreferenceResolver:
         
         return overlap_len / min_len if min_len > 0 else 0.0
     
+    # Pronouns - NEVER surface as standalone entities
+    # HIPAA Safe Harbor requires removing the 18 identifiers, not references to them.
+    # Once "John Smith" is redacted, "he" becomes non-identifying.
+    # These are still useful as SIGNALS for the meta-classifier, but should not
+    # become standalone Entity objects.
+    PRONOUNS = {
+        # First person
+        'i', 'me', 'my', 'mine', 'myself',
+        # Second person
+        'you', 'your', 'yours', 'yourself', 'yourselves',
+        # Third person singular
+        'he', 'him', 'his', 'himself',
+        'she', 'her', 'hers', 'herself',
+        'it', 'its', 'itself',
+        # Third person plural
+        'they', 'them', 'their', 'theirs', 'themselves',
+        # First person plural
+        'we', 'us', 'our', 'ours', 'ourselves',
+        # Demonstratives
+        'this', 'that', 'these', 'those',
+        # Relative/interrogative
+        'who', 'whom', 'whose', 'which', 'what',
+        # Indefinite (common ones that get flagged)
+        'one', 'ones',
+    }
+    
     def get_additional_phi_spans(
         self,
         coref_result: CorefResult,
@@ -161,11 +187,16 @@ class CoreferenceResolver:
         """
         Get NEW spans that should be flagged as PHI based on coreference.
         
-        These are mentions in clusters with a PHI anchor that weren't
-        originally detected (pronouns, "the patient", etc.)
+        Returns substantive mentions like "the patient", "Mr. Smith", "Dr. Jones"
+        that corefer with detected PHI.
+        
+        IMPORTANT: Pure pronouns (he/she/your/etc.) are NOT surfaced as entities.
+        Per HIPAA Safe Harbor, we only need to redact the 18 identifiers themselves,
+        not references to them. Once "John Smith" is redacted, "he" is non-identifying.
+        Pronouns are still captured as SIGNALS for the meta-classifier.
         
         Returns:
-            List of new span dicts with coref signals
+            List of new span dicts with coref signals (excluding pronouns)
         """
         # Build set of already-detected spans
         detected_set = {(s['start'], s['end']) for s in detected_spans}
@@ -188,7 +219,19 @@ class CoreferenceResolver:
                 if cluster.anchor_span == key:
                     continue
                 
-                # This is a NEW span we should consider
+                # SKIP pure pronouns - they shouldn't be standalone entities
+                mention_clean = mention_text.lower().strip()
+                if mention_clean in self.PRONOUNS:
+                    logger.debug(f"Skipping pronoun '{mention_text}' (corefers with {cluster.anchor_type})")
+                    continue
+                
+                # SKIP very short spans (likely fragments or missed pronouns)
+                if len(mention_clean) <= 2:
+                    logger.debug(f"Skipping short span '{mention_text}' (len <= 2)")
+                    continue
+                
+                # This is a substantive NEW span we should flag
+                # Examples: "the patient", "Mr. Smith", "Dr. Jones", "the defendant"
                 new_spans.append({
                     'start': mention_start,
                     'end': mention_end,
@@ -204,6 +247,7 @@ class CoreferenceResolver:
                     'coref_anchor_conf': cluster.anchor_confidence,
                 })
         
+        logger.debug(f"Coreference: {len(new_spans)} substantive mentions (pronouns filtered)")
         return new_spans
     
     def enrich_signals(

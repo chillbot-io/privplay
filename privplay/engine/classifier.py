@@ -166,8 +166,23 @@ class ClassificationEngine:
         use_mock_model: bool = False,
         capture_signals: bool = False,
         use_coreference: bool = True,
+        use_meta_classifier: bool = True,
     ):
-        self.config = config or get_config()
+        self.config = config or get_config()\
+        
+        # Meta-classifier for learned merge decisions
+        self._meta_classifier = None
+        self.use_meta_classifier = use_meta_classifier
+        if use_meta_classifier:
+            try:
+                from ..training.meta_classifier import MetaClassifier
+                self._meta_classifier = MetaClassifier()
+                if self._meta_classifier.is_trained():
+                    logger.info("Meta-classifier loaded and ready")
+                else:
+                    logger.info("Meta-classifier not trained, using rule-based merge")
+            except Exception as e:
+                logger.warning(f"Failed to load meta-classifier: {e}")
         
         # Stanford PHI model
         self.phi_model = phi_model or get_model(use_mock=use_mock_model)
@@ -434,6 +449,12 @@ class ClassificationEngine:
         if not all_entities:
             return []
         
+        # Validate entity positions (#6 - prevent silent corruption)
+        all_entities = self._validate_entity_positions(all_entities, text)
+        
+        if not all_entities:
+            return []
+        
         # Sort by start position
         all_entities.sort(key=lambda e: (e.start, -e.end))
         
@@ -523,20 +544,76 @@ class ClassificationEngine:
     
     def _merge_overlapping(self, entities: List[Entity], text: str) -> Entity:
         """
-        Merge overlapping entities using tiered authority model.
+        Merge overlapping entities using meta-classifier or tiered authority model.
+        
+        If meta-classifier is trained, use learned merge strategy.
+        Otherwise fall back to rule-based tiers:
         
         Tier 1: Rules (algorithmic validation) → highest authority
         Tier 2: Presidio (pattern + context)
         Tier 3: PII BERT (learned on AI4Privacy)
         Tier 4: PHI BERT (Stanford, clinical focus)
+        
+        Within each tier, if multiple entities have different types:
+        - Prefer more specific types over OTHER
+        - Prefer types with higher confidence
+        - If same confidence, prefer the type that appears most often
         """
+        # Try meta-classifier first
+        if self._meta_classifier and self._meta_classifier.is_trained():
+            signals = self._build_signals(entities, entities[0], text)
+            is_entity, entity_type, confidence = self._meta_classifier.predict(signals)
+            
+            if is_entity:
+                # Use the best span from overlapping entities
+                best = max(entities, key=lambda e: e.confidence)
+                try:
+                    etype = EntityType(entity_type)
+                except ValueError:
+                    etype = EntityType.OTHER
+                
+                return Entity(
+                    text=best.text,
+                    start=best.start,
+                    end=best.end,
+                    entity_type=etype,
+                    confidence=confidence,
+                    source=SourceType.MERGED,
+                )
+        
+        # Fall back to rule-based merge
         sources = set(getattr(e, "_detector", e.source) for e in entities)
         n_sources = len(sources)
+        
+        def resolve_type_conflict(candidates: List[Entity]) -> Entity:
+            """Resolve conflicts when multiple entities in same tier have different types."""
+            if len(candidates) == 1:
+                return candidates[0]
+            
+            # Prefer non-OTHER types
+            specific = [e for e in candidates if e.entity_type != EntityType.OTHER]
+            if specific:
+                candidates = specific
+            
+            # Group by type and pick the type with highest total confidence
+            type_scores: Dict[EntityType, float] = {}
+            type_best: Dict[EntityType, Entity] = {}
+            for e in candidates:
+                if e.entity_type not in type_scores:
+                    type_scores[e.entity_type] = 0.0
+                    type_best[e.entity_type] = e
+                type_scores[e.entity_type] += e.confidence
+                if e.confidence > type_best[e.entity_type].confidence:
+                    type_best[e.entity_type] = e
+            
+            # Pick the type with highest aggregate score
+            best_type = max(type_scores.keys(), key=lambda t: type_scores[t])
+            return type_best[best_type]
         
         # Tier 1: Rules with high confidence always win
         rules = [e for e in entities if getattr(e, "_detector", "") == "rule"]
         if rules:
-            best = max(rules, key=lambda e: e.confidence)
+            best = resolve_type_conflict(rules)
             confidence = best.confidence
             if n_sources > 1:
                 confidence = min(0.99, confidence + 0.05)
@@ -552,7 +629,7 @@ class ClassificationEngine:
         # Tier 2: Presidio
         presidio = [e for e in entities if getattr(e, "_detector", "") == "presidio"]
         if presidio:
-            best = max(presidio, key=lambda e: e.confidence)
+            best = resolve_type_conflict(presidio)
             confidence = best.confidence
             if n_sources > 1:
                 confidence = min(0.99, confidence + 0.05)
@@ -568,8 +645,7 @@ class ClassificationEngine:
         # Tier 3: PII BERT (more entity types than PHI BERT)
         pii = [e for e in entities if getattr(e, "_detector", "") == "pii_bert"]
         if pii:
-            specific = [e for e in pii if e.entity_type != EntityType.OTHER]
-            best = max(specific or pii, key=lambda e: e.confidence)
+            best = resolve_type_conflict(pii)
             confidence = best.confidence
             if n_sources > 1:
                 confidence = min(0.99, confidence + 0.05)
@@ -585,8 +661,7 @@ class ClassificationEngine:
         # Tier 4: PHI BERT (Stanford)
         phi = [e for e in entities if getattr(e, "_detector", "") == "phi_bert"]
         if phi:
-            specific = [e for e in phi if e.entity_type != EntityType.OTHER]
-            best = max(specific or phi, key=lambda e: e.confidence)
+            best = resolve_type_conflict(phi)
             return Entity(
                 text=best.text,
                 start=best.start,
@@ -604,6 +679,60 @@ class ClassificationEngine:
         """Filter out allowlisted terms."""
         return [e for e in entities if not is_allowed(e.text)]
     
+    def _validate_entity_positions(self, entities: List[Entity], text: str) -> List[Entity]:
+        """
+        Validate that entity positions match entity text.
+        
+        Prevents silent corruption when entity.start:end doesn't match entity.text.
+        Fixes positions where possible, drops entities that can't be fixed.
+        """
+        validated = []
+        
+        for entity in entities:
+            # Check if positions are valid
+            if entity.start < 0 or entity.end > len(text) or entity.start >= entity.end:
+                logger.warning(
+                    f"Invalid entity position: {entity.text!r} at {entity.start}:{entity.end} "
+                    f"(text length: {len(text)})"
+                )
+                continue
+            
+            actual_text = text[entity.start:entity.end]
+            
+            if actual_text == entity.text:
+                # Perfect match
+                validated.append(entity)
+            elif actual_text.strip() == entity.text.strip():
+                # Whitespace difference - adjust
+                entity.text = actual_text
+                validated.append(entity)
+            else:
+                # Mismatch - try to find the text nearby
+                search_start = max(0, entity.start - 20)
+                search_end = min(len(text), entity.end + 20)
+                search_region = text[search_start:search_end]
+                
+                idx = search_region.find(entity.text)
+                if idx >= 0:
+                    # Found it nearby - fix positions
+                    new_start = search_start + idx
+                    new_end = new_start + len(entity.text)
+                    logger.debug(
+                        f"Fixed entity position: {entity.text!r} "
+                        f"{entity.start}:{entity.end} -> {new_start}:{new_end}"
+                    )
+                    entity.start = new_start
+                    entity.end = new_end
+                    validated.append(entity)
+                else:
+                    # Can't find it - drop the entity
+                    logger.warning(
+                        f"Entity position mismatch, dropping: {entity.text!r} "
+                        f"at {entity.start}:{entity.end}, found {actual_text!r}"
+                    )
+        
+        return validated
+    
     def _verify_uncertain(
         self, 
         entities: List[Entity], 
@@ -617,7 +746,11 @@ class ClassificationEngine:
             if entity.confidence >= threshold:
                 verified.append(entity)
             else:
-                result = self.verifier.verify(entity, text)
+                result = self.verifier.verify(
+                    entity_text=entity.text,
+                    entity_type=entity.entity_type,
+                    context=text
+                )
                 if result.decision == VerificationResult.YES:
                     entity.llm_confidence = result.confidence
                     entity.llm_reasoning = result.reasoning

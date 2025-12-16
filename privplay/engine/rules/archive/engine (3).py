@@ -633,17 +633,9 @@ class RuleEngine:
         ))
         
         # Username/handle patterns
-        # FIXED: Require delimiter (: # =) to avoid matching "user agent", "handle with", etc.
         self.add_rule(Rule(
             name="username_labeled",
-            pattern=re.compile(r'(?:user(?:name)?|login|screen\s*name)\s*[:=#]\s*[A-Za-z0-9_\-\.]{3,30}', re.I),
-            entity_type=EntityType.USERNAME,
-            confidence=0.88,
-        ))
-        # Handle with @ prefix (more specific)
-        self.add_rule(Rule(
-            name="handle_labeled",
-            pattern=re.compile(r'(?:handle)\s*[:=#]\s*@?[A-Za-z0-9_\-\.]{3,30}', re.I),
+            pattern=re.compile(r'(?:user(?:name)?|login|handle|screen\s*name)[:\s#]*[A-Za-z0-9_\-\.]{3,30}', re.I),
             entity_type=EntityType.USERNAME,
             confidence=0.88,
         ))

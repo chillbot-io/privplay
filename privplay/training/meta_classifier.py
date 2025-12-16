@@ -7,13 +7,18 @@ Supports online learning from human corrections.
 
 import json
 import logging
-import pickle
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
+
+# Use joblib for model serialization (safer than pickle, better compression)
+try:
+    import joblib
+except ImportError:
+    joblib = None
 
 logger = logging.getLogger(__name__)
 
@@ -63,33 +68,61 @@ class MetaClassifier:
     
     def _load(self):
         """Load trained model from disk."""
-        model_file = self.model_path / "model.pkl"
-        if model_file.exists():
+        import json
+        
+        # Check for model saved by train_meta_classifier.py
+        is_entity_file = self.model_path / "is_entity_model.pkl"
+        feature_importance_file = self.model_path / "feature_importance.json"
+        
+        if is_entity_file.exists():
             try:
-                with open(model_file, "rb") as f:
-                    data = pickle.load(f)
-                self._is_entity_model = data["is_entity_model"]
-                self._entity_type_model = data["entity_type_model"]
-                self._label_encoder = data["label_encoder"]
-                self._feature_names = data["feature_names"]
+                # Load model with joblib (how it was saved)
+                if joblib:
+                    self._is_entity_model = joblib.load(is_entity_file)
+                else:
+                    import pickle
+                    with open(is_entity_file, "rb") as f:
+                        self._is_entity_model = pickle.load(f)
+                
+                # Load feature names from feature_importance.json
+                if feature_importance_file.exists():
+                    with open(feature_importance_file, "r") as f:
+                        data = json.load(f)
+                    self._feature_names = data.get("feature_names", [])
+                
+                # We don't have a separate entity_type model in this format
+                # The predict method will handle this
                 self._is_trained = True
-                logger.info(f"Loaded meta-classifier from {model_file}")
+                logger.info(f"Loaded meta-classifier from {self.model_path}")
+                logger.info(f"  Features: {len(self._feature_names) if self._feature_names else 'unknown'}")
+                return
+                
             except Exception as e:
                 logger.warning(f"Failed to load meta-classifier: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
     
     def _save(self):
-        """Save trained model to disk."""
+        """Save trained model to disk using joblib (safer than pickle)."""
         self.model_path.mkdir(parents=True, exist_ok=True)
-        model_file = self.model_path / "model.pkl"
         
-        with open(model_file, "wb") as f:
-            pickle.dump({
-                "is_entity_model": self._is_entity_model,
-                "entity_type_model": self._entity_type_model,
-                "label_encoder": self._label_encoder,
-                "feature_names": self._feature_names,
-                "saved_at": datetime.utcnow().isoformat(),
-            }, f)
+        data = {
+            "is_entity_model": self._is_entity_model,
+            "entity_type_model": self._entity_type_model,
+            "label_encoder": self._label_encoder,
+            "feature_names": self._feature_names,
+            "saved_at": datetime.utcnow().isoformat(),
+        }
+        
+        if joblib:
+            model_file = self.model_path / "model.joblib"
+            joblib.dump(data, model_file, compress=3)
+        else:
+            # Fallback to pickle if joblib not available
+            import pickle
+            model_file = self.model_path / "model.pkl"
+            with open(model_file, "wb") as f:
+                pickle.dump(data, f)
         
         logger.info(f"Saved meta-classifier to {model_file}")
     
@@ -115,17 +148,27 @@ class MetaClassifier:
         
         # Convert to feature vector
         features = signals.to_feature_dict()
-        X = np.array([[features[name] for name in self._feature_names]])
+        
+        # Build feature vector in correct order
+        try:
+            X = np.array([[features.get(name, 0) for name in self._feature_names]])
+        except Exception as e:
+            logger.warning(f"Failed to build feature vector: {e}")
+            return self._fallback_predict(signals)
         
         # Predict is_entity
-        is_entity_proba = self._is_entity_model.predict_proba(X)[0]
-        is_entity = is_entity_proba[1] > 0.5
-        confidence = float(is_entity_proba[1])
+        try:
+            is_entity_proba = self._is_entity_model.predict_proba(X)[0]
+            is_entity = is_entity_proba[1] > 0.5
+            confidence = float(is_entity_proba[1])
+        except Exception as e:
+            logger.warning(f"Prediction failed: {e}")
+            return self._fallback_predict(signals)
         
-        # Predict entity type
+        # For entity type, use the merged_type from signals since we don't have 
+        # a separate entity_type model in the current training pipeline
         if is_entity:
-            type_pred = self._entity_type_model.predict(X)[0]
-            entity_type = self._label_encoder.inverse_transform([type_pred])[0]
+            entity_type = signals.merged_type or "OTHER"
         else:
             entity_type = "NONE"
         
