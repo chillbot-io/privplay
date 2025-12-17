@@ -195,9 +195,9 @@ PASSWORD_NEGATIVE_KEYWORDS = {
 }
 
 
-def is_password_like(candidate: str, full_text: str, position: int) -> tuple:
+def is_password_like(candidate: str, full_text: str, position: int) -> bool:
     """
-    Relaxed password detection - works with OR without keyword context.
+    Varonis-style password detection using entropy + proximity.
     
     Args:
         candidate: The potential password string
@@ -205,16 +205,11 @@ def is_password_like(candidate: str, full_text: str, position: int) -> tuple:
         position: Starting position of candidate in full_text
         
     Returns:
-        (is_password, confidence) tuple
-        
-    Logic:
-    - WITH keyword nearby: confidence 0.90
-    - WITHOUT keyword but high entropy (>3.5): confidence 0.75
-    - WITHOUT keyword and medium entropy (3.0-3.5): confidence 0.60
+        True if this looks like a real password/secret
     """
     # Length check (8-64 chars for passwords)
     if len(candidate) < 8 or len(candidate) > 64:
-        return False, 0.0
+        return False
     
     # Must have mixed character types (not all letters or all digits)
     has_letters = any(c.isalpha() for c in candidate)
@@ -224,40 +219,29 @@ def is_password_like(candidate: str, full_text: str, position: int) -> tuple:
     # Require at least 2 of: letters, digits, special
     type_count = sum([has_letters, has_digits, has_special])
     if type_count < 2:
-        return False, 0.0
+        return False
     
-    # Must have both upper and lower case OR special chars (real passwords are complex)
-    has_mixed_case = any(c.isupper() for c in candidate) and any(c.islower() for c in candidate)
-    if not has_mixed_case and not has_special:
-        return False, 0.0
-    
-    # Entropy check (lowered threshold for relaxed mode)
+    # Entropy check (threshold 3.0, like GitGuardian)
     entropy = shannon_entropy(candidate)
-    if entropy < 2.8:
-        return False, 0.0
+    if entropy < 3.0:
+        return False
     
     # Get context window (100 chars before and after)
     context_start = max(0, position - 100)
     context_end = min(len(full_text), position + len(candidate) + 100)
     context = full_text[context_start:context_end].lower()
     
-    # Check for hint keywords
+    # Check for hint keywords (must have at least one nearby)
     has_hint = any(hint in context for hint in PASSWORD_HINT_KEYWORDS)
+    if not has_hint:
+        return False
     
     # Check for negative keywords (reject if present)
     has_negative = any(neg in context for neg in PASSWORD_NEGATIVE_KEYWORDS)
     if has_negative:
-        return False, 0.0
+        return False
     
-    # Determine confidence based on entropy and context
-    if has_hint:
-        return True, 0.90
-    elif entropy >= 3.5:
-        return True, 0.75  # High entropy even without context
-    elif entropy >= 3.0:
-        return True, 0.60  # Medium entropy - lower confidence
-    
-    return False, 0.0
+    return True
 
 
 # Valid US ZIP code 3-digit prefixes
@@ -640,23 +624,6 @@ class RuleEngine:
             pattern=re.compile(r'(?:Acct?\.?|Account|Bank\s*Account)[:\s#]*\d{6,17}', re.I),
             entity_type=EntityType.ACCOUNT_NUMBER,
             confidence=0.90,
-        ))
-        
-        # Alphanumeric account/reference IDs (WGR808623E, F6543034K pattern)
-        # Common in European banking, insurance, government IDs
-        self.add_rule(Rule(
-            name="alphanumeric_account_id",
-            pattern=re.compile(r'\b[A-Z]{1,3}\d{5,9}[A-Z]?\b'),
-            entity_type=EntityType.ACCOUNT_NUMBER,
-            confidence=0.75,  # Lower confidence - needs context
-        ))
-        
-        # Reference number with labeled context
-        self.add_rule(Rule(
-            name="reference_number_labeled",
-            pattern=re.compile(r'(?:ref(?:erence)?|id|no\.?|number)[:\s#]*([A-Z0-9]{6,15})\b', re.I),
-            entity_type=EntityType.ACCOUNT_NUMBER,
-            confidence=0.88,
         ))
         
         # Crypto - Bitcoin address
@@ -1109,43 +1076,6 @@ class RuleEngine:
             entity_type=EntityType.DEVICE_ID,
             confidence=0.92,
         ))
-        
-        # =================================================================
-        # ENHANCED NAME DETECTION
-        # =================================================================
-        # Catch names in common contexts even if not in name dictionaries
-        
-        # Name with salutation (Mr/Mrs/Ms/Dr + Capitalized word)
-        self.add_rule(Rule(
-            name="name_with_salutation",
-            pattern=re.compile(r'\b(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b'),
-            entity_type=EntityType.NAME_PERSON,
-            confidence=0.92,
-        ))
-        
-        # Name after "named/called/name is"
-        self.add_rule(Rule(
-            name="name_after_label",
-            pattern=re.compile(r'(?:named|called|name\s+is|name:)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', re.I),
-            entity_type=EntityType.NAME_PERSON,
-            confidence=0.88,
-        ))
-        
-        # Patient/Client + Name pattern  
-        self.add_rule(Rule(
-            name="patient_name_labeled",
-            pattern=re.compile(r'(?:patient|client|customer|user)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', re.I),
-            entity_type=EntityType.NAME_PATIENT,
-            confidence=0.90,
-        ))
-        
-        # Dear + Name pattern (letters, emails)
-        self.add_rule(Rule(
-            name="dear_name",
-            pattern=re.compile(r'(?:Dear|Hi|Hello)\s+([A-Z][a-z]+)', re.I),
-            entity_type=EntityType.NAME_PERSON,
-            confidence=0.85,
-        ))
     
     def add_rule(self, rule: Rule):
         """Add a detection rule."""
@@ -1213,15 +1143,14 @@ class RuleEngine:
             if any(kw in candidate_lower for kw in ['password', 'passwd', 'secret', 'token']):
                 continue
             
-            # Apply relaxed password validation
-            is_pw, confidence = is_password_like(candidate, text, position)
-            if is_pw:
+            # Apply Varonis-style validation
+            if is_password_like(candidate, text, position):
                 entities.append(Entity(
                     text=candidate,
                     start=position,
                     end=match.end(),
                     entity_type=EntityType.PASSWORD,
-                    confidence=confidence,
+                    confidence=0.85,  # Slightly lower since no explicit label
                     source=SourceType.RULE,
                 ))
         

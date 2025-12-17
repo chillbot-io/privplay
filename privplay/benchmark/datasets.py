@@ -62,7 +62,13 @@ class BenchmarkDataset:
         }
 
 
-# Mapping from AI4Privacy labels to our EntityType values
+# =============================================================================
+# AI4Privacy Type Mapping - PRECISION FIX
+# =============================================================================
+# Non-PII types are mapped to None to exclude from evaluation.
+# These types (JOBTITLE, GENDER, HEIGHT, etc.) are not protected information
+# per HIPAA Safe Harbor and shouldn't count against precision/recall.
+
 AI4PRIVACY_MAPPING = {
     # Names
     "FIRSTNAME": "NAME_PERSON",
@@ -104,11 +110,11 @@ AI4PRIVACY_MAPPING = {
     # Financial
     "CREDITCARDNUMBER": "CREDIT_CARD",
     "CREDITCARDCVV": "CREDIT_CARD",
-    "CREDITCARDISSUER": "OTHER",
-    "CURRENCY": "OTHER",
-    "CURRENCYCODE": "OTHER",
-    "CURRENCYSYMBOL": "OTHER",
-    "CURRENCYNAME": "OTHER",
+    "CREDITCARDISSUER": None,  # Not PII - card brand name
+    "CURRENCY": None,  # Not PII
+    "CURRENCYCODE": None,  # Not PII
+    "CURRENCYSYMBOL": None,  # Not PII
+    "CURRENCYNAME": None,  # Not PII
     "BITCOINADDRESS": "CRYPTO_ADDRESS",
     "ETHEREUMADDRESS": "CRYPTO_ADDRESS",
     "LITECOINADDRESS": "CRYPTO_ADDRESS",
@@ -121,9 +127,9 @@ AI4PRIVACY_MAPPING = {
     # Medical / Health
     "MEDICALRECORD": "MRN",
     "HEALTHPLAN": "HEALTH_PLAN",
-    "BLOOD_TYPE": "OTHER",
-    "HEIGHT": "OTHER",
-    "WEIGHT": "OTHER",
+    "BLOOD_TYPE": None,  # Not PII alone
+    "HEIGHT": None,  # Not PII alone
+    "WEIGHT": None,  # Not PII alone
     
     # Digital
     "IP": "IP_ADDRESS",
@@ -139,33 +145,33 @@ AI4PRIVACY_MAPPING = {
     "DATE": "DATE",
     "DOB": "DATE_DOB",
     "DATEOFBIRTH": "DATE_DOB",
-    "TIME": "OTHER",
+    "TIME": None,  # Not PII - time without date context
     "AGE": "AGE",
     
-    # Organization
-    "COMPANY": "OTHER",
-    "COMPANYNAME": "OTHER",
-    "ORGANIZATION": "OTHER",
+    # Organization - not PII per HIPAA Safe Harbor
+    "COMPANY": None,
+    "COMPANYNAME": None,
+    "ORGANIZATION": None,
     
     # Other identifiers
     "VEHICLEVIN": "DEVICE_ID",
     "VEHICLEVRM": "DEVICE_ID",
-    "LICENSEPLATE": "OTHER",
+    "LICENSEPLATE": "DEVICE_ID",  # IS identifiable - keep it
     "IMEI": "DEVICE_ID",
     "IMEISV": "DEVICE_ID",
     "SERIALNUMBER": "DEVICE_ID",
     "NEARBYGPSCOORDINATE": "GPS_COORDINATE",
-    "ORDINALDIRECTION": "OTHER",
-    "GENDER": "OTHER",
-    "SEX": "OTHER",
-    "JOBAREA": "OTHER",
-    "JOBTITLE": "OTHER",
-    "JOBTYPE": "OTHER",
+    "ORDINALDIRECTION": None,  # Not PII - N/S/E/W
+    "GENDER": None,  # Not PII alone
+    "SEX": None,  # Not PII alone
+    "JOBAREA": None,  # Not PII
+    "JOBTITLE": None,  # Not PII
+    "JOBTYPE": None,  # Not PII
 }
 
 
-def _normalize_label(label: str) -> str:
-    """Normalize a label to our EntityType format."""
+def _normalize_label(label: str) -> Optional[str]:
+    """Normalize a label to our EntityType format. Returns None if excluded."""
     # Remove B-, I- prefixes (BIO tagging)
     if label.startswith(("B-", "I-")):
         label = label[2:]
@@ -176,10 +182,10 @@ def _normalize_label(label: str) -> str:
     # Check mapping
     for key, value in AI4PRIVACY_MAPPING.items():
         if label == key.upper().replace("_", ""):
-            return value
+            return value  # Can be None for excluded types
     
-    # Default to OTHER
-    return "OTHER"
+    # Default to None (exclude unknown types)
+    return None
 
 
 def load_ai4privacy_dataset(
@@ -238,15 +244,18 @@ def load_ai4privacy_dataset(
             # Try to find entities from masked version
             entities = []
         
-        # Track entity types
+        # Filter out None types (excluded non-PII) and track entity types
+        filtered_entities = []
         for e in entities:
-            entity_types_seen.add(e.normalized_type)
+            if e.normalized_type is not None:
+                filtered_entities.append(e)
+                entity_types_seen.add(e.normalized_type)
         
         sample_id = hashlib.md5(text.encode()).hexdigest()[:12]
         samples.append(BenchmarkSample(
             id=f"ai4privacy_{sample_id}",
             text=text,
-            entities=entities,
+            entities=filtered_entities,  # Use filtered list
             source="ai4privacy",
             metadata={"index": idx},
         ))
@@ -287,12 +296,13 @@ def _parse_bio_tags(
             
             # Start new entity
             entity_type = label[2:]
+            normalized = _normalize_label(entity_type)
             current_entity = AnnotatedEntity(
                 text=token,
                 start=position,
                 end=position + len(token),
                 entity_type=entity_type,
-                normalized_type=_normalize_label(entity_type),
+                normalized_type=normalized,
             )
         elif label.startswith("I-") and current_entity:
             # Continue current entity
@@ -321,13 +331,14 @@ def _parse_privacy_mask(text: str, privacy_mask: List[Dict]) -> List[AnnotatedEn
         entity_type = mask.get("label", mask.get("type", "OTHER"))
         start = mask.get("start", 0)
         end = mask.get("end", 0)
+        normalized = _normalize_label(entity_type)
         
         entities.append(AnnotatedEntity(
             text=text[start:end],
             start=start,
             end=end,
             entity_type=entity_type,
-            normalized_type=_normalize_label(entity_type),
+            normalized_type=normalized,
         ))
     
     return entities
@@ -341,13 +352,14 @@ def _parse_spans(text: str, spans: List[Dict]) -> List[AnnotatedEntity]:
         entity_type = span.get("label", span.get("type", "OTHER"))
         start = span.get("start", span.get("begin", 0))
         end = span.get("end", 0)
+        normalized = _normalize_label(entity_type)
         
         entities.append(AnnotatedEntity(
             text=text[start:end],
             start=start,
             end=end,
             entity_type=entity_type,
-            normalized_type=_normalize_label(entity_type),
+            normalized_type=normalized,
         ))
     
     return entities

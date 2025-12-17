@@ -741,7 +741,7 @@ def train_meta_classifier(
     console.print(f"    Recall:    {recall:.1%}")
     
     # Feature importance
-    importances = list(zip(feature_names, clf.feature_importances_))
+    importances = [(name, float(imp)) for name, imp in ...]
     importances.sort(key=lambda x: -x[1])
     
     console.print(f"\n  [bold]Top Features:[/bold]")

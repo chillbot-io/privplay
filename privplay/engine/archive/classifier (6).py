@@ -266,9 +266,6 @@ class ClassificationEngine:
         if verify and self.verifier and self.verifier.is_available():
             entities = self._verify_uncertain(entities, text, threshold)
         
-        # Correct type confusion (16-digit MRN → CREDIT_CARD, etc.)
-        entities = self._correct_type_confusion(entities)
-        
         return entities
     
     def _enrich_with_coreference(
@@ -690,26 +687,7 @@ class ClassificationEngine:
         - Prefer types with higher confidence
         - If same confidence, prefer the type that appears most often
         """
-        # ===========================================
-        # CHECKSUM BYPASS - Algorithmic > ML
-        # ===========================================
-        # Luhn-validated credit cards, verified SSNs, DEA, NPI, etc.
-        # These are near-certain. Don't let the meta-classifier reject them.
-        rules_all = [e for e in entities if getattr(e, "_detector", "") == "rule"]
-        checksummed = [e for e in rules_all if e.confidence >= 0.95]
-        
-        if checksummed:
-            best = max(checksummed, key=lambda e: e.confidence)
-            return Entity(
-                text=best.text,
-                start=best.start,
-                end=best.end,
-                entity_type=best.entity_type,
-                confidence=best.confidence,
-                source=SourceType.MERGED,
-            )
-        
-        # Try meta-classifier for non-checksummed detections
+        # Try meta-classifier first
         if self._meta_classifier and self._meta_classifier.is_trained():
             signals = self._build_signals(entities, entities[0], text)
             is_entity, entity_type, confidence = self._meta_classifier.predict(signals)
@@ -834,56 +812,6 @@ class ClassificationEngine:
     def _apply_allowlist(self, entities: List[Entity]) -> List[Entity]:
         """Filter out allowlisted terms."""
         return [e for e in entities if not is_allowed(e.text)]
-    
-    def _correct_type_confusion(self, entities: List[Entity]) -> List[Entity]:
-        """
-        Post-process entities to fix common type confusions.
-        
-        Known issues from AI4Privacy benchmark:
-        - 16-digit numbers typed as MRN are usually credit cards
-        - 16-digit numbers typed as DATE are usually credit cards
-        """
-        corrected = []
-        
-        for entity in entities:
-            # Strip non-digits for length check
-            digits_only = ''.join(c for c in entity.text if c.isdigit())
-            text_clean = entity.text.replace('-', '').replace(' ', '')
-            
-            # Fix 1: 16-digit MRN → CREDIT_CARD
-            # Real MRNs are rarely 16 digits; credit cards are almost always 15-16
-            if (entity.entity_type == EntityType.MRN and 
-                len(digits_only) in (15, 16) and
-                len(text_clean) <= 19):
-                
-                entity = Entity(
-                    text=entity.text,
-                    start=entity.start,
-                    end=entity.end,
-                    entity_type=EntityType.CREDIT_CARD,
-                    confidence=entity.confidence * 0.95,  # Slight confidence reduction
-                    source=entity.source,
-                )
-                logger.debug(f"Retyped MRN → CREDIT_CARD: {entity.text}")
-            
-            # Fix 2: DATE that's all digits and 15-16 chars → likely CREDIT_CARD
-            elif (entity.entity_type == EntityType.DATE and
-                  len(digits_only) in (15, 16) and
-                  text_clean.isdigit()):
-                
-                entity = Entity(
-                    text=entity.text,
-                    start=entity.start,
-                    end=entity.end,
-                    entity_type=EntityType.CREDIT_CARD,
-                    confidence=entity.confidence * 0.90,
-                    source=entity.source,
-                )
-                logger.debug(f"Retyped DATE → CREDIT_CARD: {entity.text}")
-            
-            corrected.append(entity)
-        
-        return corrected
     
     def _validate_entity_positions(self, entities: List[Entity], text: str) -> List[Entity]:
         """
