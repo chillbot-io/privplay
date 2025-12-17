@@ -1,6 +1,8 @@
 """Rule-based PHI/PII detection - comprehensive patterns with validation."""
 
 import re
+import math
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Optional, Pattern, Callable
 import logging
@@ -139,6 +141,107 @@ def validate_iban(iban: str) -> bool:
     
     # Check mod 97
     return int(numeric) % 97 == 1
+
+
+# =============================================================================
+# ENTROPY-BASED PASSWORD/SECRET DETECTION (Varonis-style)
+# =============================================================================
+
+def shannon_entropy(s: str) -> float:
+    """
+    Calculate Shannon entropy of a string.
+    Higher entropy = more random = more likely to be a secret.
+    
+    Typical values:
+    - Natural language: 2.5-3.5
+    - Passwords/secrets: 3.5-4.5
+    - Random base64: 4.0-5.0
+    """
+    if not s:
+        return 0.0
+    counts = Counter(s)
+    length = len(s)
+    return -sum(
+        (count / length) * math.log2(count / length)
+        for count in counts.values()
+    )
+
+
+# Keywords that hint at passwords/secrets nearby
+PASSWORD_HINT_KEYWORDS = {
+    # Direct password terms
+    'password', 'passwords', 'passwd', 'pwd', 'pass',
+    'secret', 'secrets', 'credential', 'credentials', 'cred',
+    'token', 'tokens', 'api_key', 'apikey', 'api-key',
+    'auth', 'authentication', 'authorize', 'authorization',
+    'key', 'private_key', 'privatekey', 'private-key',
+    'access_token', 'accesstoken', 'access-token',
+    'refresh_token', 'bearer', 'jwt',
+    'pin', 'pincode', 'pin-code', 'pin_code',
+    # Context hints
+    'login', 'signin', 'sign-in', 'sign_in',
+    'recite', 'enter', 'type', 'input',
+    'asking for your', 'send your', 'provide your',
+    'verification', 'verify', 'confirm',
+    'encrypted', 'decrypt', 'hash',
+}
+
+# Negative keywords - if present nearby, probably not a real secret
+PASSWORD_NEGATIVE_KEYWORDS = {
+    'test', 'testing', 'example', 'sample', 'demo',
+    'fake', 'dummy', 'placeholder', 'mock',
+    'todo', 'fixme', 'xxx', 'temp', 'tmp',
+    'default', 'change_me', 'changeme', 'your_',
+}
+
+
+def is_password_like(candidate: str, full_text: str, position: int) -> bool:
+    """
+    Varonis-style password detection using entropy + proximity.
+    
+    Args:
+        candidate: The potential password string
+        full_text: The complete text being scanned
+        position: Starting position of candidate in full_text
+        
+    Returns:
+        True if this looks like a real password/secret
+    """
+    # Length check (8-64 chars for passwords)
+    if len(candidate) < 8 or len(candidate) > 64:
+        return False
+    
+    # Must have mixed character types (not all letters or all digits)
+    has_letters = any(c.isalpha() for c in candidate)
+    has_digits = any(c.isdigit() for c in candidate)
+    has_special = any(not c.isalnum() for c in candidate)
+    
+    # Require at least 2 of: letters, digits, special
+    type_count = sum([has_letters, has_digits, has_special])
+    if type_count < 2:
+        return False
+    
+    # Entropy check (threshold 3.0, like GitGuardian)
+    entropy = shannon_entropy(candidate)
+    if entropy < 3.0:
+        return False
+    
+    # Get context window (100 chars before and after)
+    context_start = max(0, position - 100)
+    context_end = min(len(full_text), position + len(candidate) + 100)
+    context = full_text[context_start:context_end].lower()
+    
+    # Check for hint keywords (must have at least one nearby)
+    has_hint = any(hint in context for hint in PASSWORD_HINT_KEYWORDS)
+    if not has_hint:
+        return False
+    
+    # Check for negative keywords (reject if present)
+    has_negative = any(neg in context for neg in PASSWORD_NEGATIVE_KEYWORDS)
+    if has_negative:
+        return False
+    
+    return True
 
 
 # Valid US ZIP code 3-digit prefixes
@@ -481,6 +584,15 @@ class RuleEngine:
             validator=luhn_checksum,
         ))
         
+        # Credit Card CVV/CVC/Security Code (3-4 digits after label)
+        # Only with context label to avoid FPs on random 3-digit numbers
+        self.add_rule(Rule(
+            name="credit_card_cvv",
+            pattern=re.compile(r'(?:CVV|CVC|CVV2|CVC2|security\s*code|card\s*verification)[:\s#]*(\d{3,4})\b', re.I),
+            entity_type=EntityType.CREDIT_CARD,
+            confidence=0.95,
+        ))
+        
         # IBAN (International Bank Account Number) with validation
         self.add_rule(Rule(
             name="iban",
@@ -536,22 +648,6 @@ class RuleEngine:
             pattern=re.compile(r'\b0x[a-fA-F0-9]{40}\b'),
             entity_type=EntityType.CRYPTO_ADDRESS,
             confidence=0.95,
-        ))
-        
-        # Crypto - Litecoin address (L, M, or 3 prefix, or ltc1 for bech32)
-        self.add_rule(Rule(
-            name="litecoin_address",
-            pattern=re.compile(r'\b[LM3][a-km-zA-HJ-NP-Z1-9]{26,33}\b'),
-            entity_type=EntityType.CRYPTO_ADDRESS,
-            confidence=0.90,
-        ))
-        
-        # Crypto - Litecoin Bech32 (ltc1)
-        self.add_rule(Rule(
-            name="litecoin_bech32",
-            pattern=re.compile(r'\bltc1[a-zA-HJ-NP-Z0-9]{39,59}\b'),
-            entity_type=EntityType.CRYPTO_ADDRESS,
-            confidence=0.92,
         ))
         
         # =================================================================
@@ -897,8 +993,88 @@ class RuleEngine:
         self.add_rule(Rule(
             name="gps_coordinates",
             pattern=re.compile(r'\b-?\d{1,3}\.\d{4,},\s*-?\d{1,3}\.\d{4,}\b'),
-            entity_type=EntityType.ADDRESS,
+            entity_type=EntityType.GPS_COORDINATE,
             confidence=0.90,
+        ))
+        
+        # =================================================================
+        # PASSWORDS & AUTHENTICATION
+        # =================================================================
+        
+        # Password with label (requires colon separator for reliability)
+        self.add_rule(Rule(
+            name="password_labeled",
+            pattern=re.compile(r'(?:password|passwd|pwd)[:\s]*[:=][:\s]*(\S+)', re.I),
+            entity_type=EntityType.PASSWORD,
+            confidence=0.95,
+        ))
+        
+        # PIN with label (4-8 digits) - expanded to catch reference codes
+        self.add_rule(Rule(
+            name="pin_labeled",
+            pattern=re.compile(r'(?:PIN|pin\s*code|reference(?:\s*(?:code|number|#))?)[:\s#]+(\d{4,8})\b', re.I),
+            entity_type=EntityType.PASSWORD,
+            confidence=0.92,
+        ))
+        
+        # =================================================================
+        # CRYPTOCURRENCY ADDRESSES (additional patterns)
+        # =================================================================
+        
+        # Litecoin address (starts with L, M, or ltc1)
+        self.add_rule(Rule(
+            name="litecoin_address",
+            pattern=re.compile(r'\b[LM][a-km-zA-HJ-NP-Z1-9]{26,33}\b'),
+            entity_type=EntityType.CRYPTO_ADDRESS,
+            confidence=0.85,
+        ))
+        
+        # Litecoin Bech32
+        self.add_rule(Rule(
+            name="litecoin_address_bech32",
+            pattern=re.compile(r'\bltc1[a-z0-9]{39,59}\b'),
+            entity_type=EntityType.CRYPTO_ADDRESS,
+            confidence=0.92,
+        ))
+        
+        # Crypto address with label
+        self.add_rule(Rule(
+            name="crypto_labeled",
+            pattern=re.compile(r'(?:bitcoin|btc|ethereum|eth|litecoin|ltc|crypto)\s*(?:address|wallet)?[:\s]+([a-zA-Z0-9]{26,60})', re.I),
+            entity_type=EntityType.CRYPTO_ADDRESS,
+            confidence=0.95,
+        ))
+        
+        # =================================================================
+        # USER AGENT STRINGS
+        # =================================================================
+        
+        # Mozilla-based user agents (Chrome, Firefox, Safari, Edge)
+        self.add_rule(Rule(
+            name="user_agent_mozilla",
+            pattern=re.compile(r'Mozilla/[\d.]+\s*\([^)]+\)\s*(?:AppleWebKit|Gecko)/[\d.]+[^\n]{0,200}'),
+            entity_type=EntityType.USER_AGENT,
+            confidence=0.95,
+        ))
+        
+        # User agent with label
+        self.add_rule(Rule(
+            name="user_agent_labeled",
+            pattern=re.compile(r'(?:User-?Agent|UA)[:\s]+(.+?)(?:\n|$)', re.I),
+            entity_type=EntityType.USER_AGENT,
+            confidence=0.92,
+        ))
+        
+        # =================================================================
+        # IMEI (additional patterns)
+        # =================================================================
+        
+        # IMEI with hyphens (common format: XX-XXXXXX-XXXXXX-X)
+        self.add_rule(Rule(
+            name="imei_hyphenated",
+            pattern=re.compile(r'\b\d{2}-\d{6}-\d{6}-\d{1,2}\b'),
+            entity_type=EntityType.DEVICE_ID,
+            confidence=0.92,
         ))
     
     def add_rule(self, rule: Rule):
@@ -930,6 +1106,53 @@ class RuleEngine:
                 entities.extend(matches)
             except Exception as e:
                 logger.error(f"Rule {rule.name} failed: {e}")
+        
+        # Add context-aware high-entropy password detection (Varonis-style)
+        entities.extend(self._detect_high_entropy_passwords(text))
+        
+        return entities
+    
+    def _detect_high_entropy_passwords(self, text: str) -> List[Entity]:
+        """
+        Detect passwords/secrets using entropy + proximity matching.
+        
+        This catches standalone high-entropy strings that are near
+        password-related keywords but don't have explicit labels.
+        """
+        entities = []
+        
+        # Pattern for potential password-like strings:
+        # - 8-64 chars
+        # - Mix of alphanumeric and common password special chars
+        # - Not pure words (must have digits or special chars mixed in)
+        pattern = re.compile(r'\b([A-Za-z0-9_\-\.+/=~$@#%^&*]{8,64})\b')
+        
+        for match in pattern.finditer(text):
+            candidate = match.group(1)
+            position = match.start()
+            
+            # Skip if this looks like a labeled password (already handled)
+            context_before = text[max(0, position-20):position].lower()
+            if any(kw in context_before for kw in ['password', 'passwd', 'pwd', 'pin', 'secret', 'token', 'key']):
+                # Check if there's an assignment operator
+                if re.search(r'[:=]\s*$', context_before):
+                    continue
+            
+            # Skip if candidate contains "password" etc (it's a label, not value)
+            candidate_lower = candidate.lower()
+            if any(kw in candidate_lower for kw in ['password', 'passwd', 'secret', 'token']):
+                continue
+            
+            # Apply Varonis-style validation
+            if is_password_like(candidate, text, position):
+                entities.append(Entity(
+                    text=candidate,
+                    start=position,
+                    end=match.end(),
+                    entity_type=EntityType.PASSWORD,
+                    confidence=0.85,  # Slightly lower since no explicit label
+                    source=SourceType.RULE,
+                ))
         
         return entities
     

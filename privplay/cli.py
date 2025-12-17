@@ -57,7 +57,6 @@ from .benchmark import (
     display_benchmark_result,
     capture_benchmark_errors,
 )
-from .benchmark.nervaluate_runner import NervaluateBenchmarkRunner
 
 # Dictionaries
 from .dictionaries import (
@@ -712,6 +711,24 @@ def download(
 benchmark_app = typer.Typer(help="Benchmark detection against standard datasets")
 app.add_typer(benchmark_app, name="benchmark")
 
+# Add nervaluate command (SemEval 2013 methodology)
+from .benchmark.nervaluate_runner import run_nervaluate_benchmark
+
+@benchmark_app.command("nervaluate")
+def benchmark_nervaluate(
+    dataset: str = typer.Argument("ai4privacy", help="Dataset to evaluate on"),
+    samples: int = typer.Option(500, "-n", "--samples", help="Number of samples"),
+):
+    """Run benchmark with nervaluate methodology (SemEval 2013).
+    
+    This provides industry-standard NER evaluation with four modes:
+    - Strict: Exact boundary AND exact type match
+    - Exact: Exact boundary match (type ignored)
+    - Partial: Any overlap (type ignored)
+    - Type: Any overlap AND exact type match
+    """
+    run_nervaluate_benchmark(dataset=dataset, n_samples=samples)
+
 
 @benchmark_app.command("list")
 def benchmark_list():
@@ -803,37 +820,6 @@ def benchmark_run(
         console.print(f"  TPs labeled: {stats['tps_labeled']}")
         console.print(f"  FPs labeled: {stats['fps_labeled']}")
         console.print(f"  Balance: {stats['balance']}")
-
-
-@benchmark_app.command("nervaluate")
-def benchmark_nervaluate(
-    dataset: str = typer.Argument("ai4privacy", help="Dataset name"),
-    samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Number of samples (default: all)"),
-    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
-):
-    """Run benchmark with nervaluate methodology (SemEval 2013).
-    
-    This implements proper NER evaluation with four modes:
-    - Strict: Exact boundary AND exact type match
-    - Exact: Exact boundary match (type ignored)
-    - Partial: Any overlap (type ignored, 0.5 credit for partial)
-    - Type: Any overlap AND exact type match
-    
-    Non-PII types (GENDER, JOBTITLE, etc.) are excluded from evaluation.
-    """
-    init_app(data_dir)
-    
-    console.print()
-    console.print(f"[bold]Running Nervaluate Benchmark: {dataset}[/bold]")
-    console.print("─" * 50)
-    
-    # Create engine (no LLM verification during benchmarking)
-    config = get_config()
-    engine = ClassificationEngine(config=config)
-    
-    # Run nervaluate benchmark
-    runner = NervaluateBenchmarkRunner(engine=engine)
-    result = runner.run(dataset_name=dataset, n_samples=samples)
 
 
 @benchmark_app.command("history")

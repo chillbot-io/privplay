@@ -1,0 +1,952 @@
+{
+  "metadata": {
+    "timestamp": "2025-12-16T17:16:08.258428",
+    "dataset": "ai4privacy",
+    "samples": 100,
+    "seed": 42,
+    "runtime_seconds": 178.028876,
+    "entity_types_evaluated": [
+      "CONTACT",
+      "CRYPTO",
+      "DATE",
+      "DIGITAL",
+      "FINANCIAL",
+      "IDNUM",
+      "LOCATION",
+      "NAME",
+      "ORG",
+      "VEHICLE"
+    ]
+  },
+  "overall": {
+    "ent_type": {
+      "correct": 47,
+      "incorrect": 8,
+      "partial": 0,
+      "missed": 7,
+      "spurious": 313,
+      "possible": 62,
+      "actual": 368,
+      "precision": 0.12771739130434784,
+      "recall": 0.7580645161290323,
+      "f1": 0.21860465116279068
+    },
+    "partial": {
+      "correct": 42,
+      "incorrect": 0,
+      "partial": 13,
+      "missed": 7,
+      "spurious": 313,
+      "possible": 62,
+      "actual": 368,
+      "precision": 0.13179347826086957,
+      "recall": 0.782258064516129,
+      "f1": 0.2255813953488372
+    },
+    "strict": {
+      "correct": 39,
+      "incorrect": 16,
+      "partial": 0,
+      "missed": 7,
+      "spurious": 313,
+      "possible": 62,
+      "actual": 368,
+      "precision": 0.10597826086956522,
+      "recall": 0.6290322580645161,
+      "f1": 0.18139534883720929
+    },
+    "exact": {
+      "correct": 42,
+      "incorrect": 13,
+      "partial": 0,
+      "missed": 7,
+      "spurious": 313,
+      "possible": 62,
+      "actual": 368,
+      "precision": 0.11413043478260869,
+      "recall": 0.6774193548387096,
+      "f1": 0.19534883720930232
+    }
+  },
+  "by_entity_type": {
+    "CONTACT": {
+      "ent_type": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 48,
+        "possible": 0,
+        "actual": 48,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "partial": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 48,
+        "possible": 0,
+        "actual": 48,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "strict": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 48,
+        "possible": 0,
+        "actual": 48,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "exact": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 48,
+        "possible": 0,
+        "actual": 48,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      }
+    },
+    "CRYPTO": {
+      "ent_type": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 10,
+        "possible": 0,
+        "actual": 10,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "partial": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 10,
+        "possible": 0,
+        "actual": 10,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "strict": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 10,
+        "possible": 0,
+        "actual": 10,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "exact": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 10,
+        "possible": 0,
+        "actual": 10,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      }
+    },
+    "DATE": {
+      "ent_type": {
+        "correct": 9,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 20,
+        "possible": 9,
+        "actual": 29,
+        "precision": 0.3103448275862069,
+        "recall": 1.0,
+        "f1": 0.4736842105263158
+      },
+      "partial": {
+        "correct": 7,
+        "incorrect": 0,
+        "partial": 2,
+        "missed": 0,
+        "spurious": 20,
+        "possible": 9,
+        "actual": 29,
+        "precision": 0.27586206896551724,
+        "recall": 0.8888888888888888,
+        "f1": 0.42105263157894735
+      },
+      "strict": {
+        "correct": 7,
+        "incorrect": 2,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 20,
+        "possible": 9,
+        "actual": 29,
+        "precision": 0.2413793103448276,
+        "recall": 0.7777777777777778,
+        "f1": 0.368421052631579
+      },
+      "exact": {
+        "correct": 7,
+        "incorrect": 2,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 20,
+        "possible": 9,
+        "actual": 29,
+        "precision": 0.2413793103448276,
+        "recall": 0.7777777777777778,
+        "f1": 0.368421052631579
+      }
+    },
+    "DIGITAL": {
+      "ent_type": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 19,
+        "possible": 0,
+        "actual": 19,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "partial": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 19,
+        "possible": 0,
+        "actual": 19,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "strict": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 19,
+        "possible": 0,
+        "actual": 19,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "exact": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 19,
+        "possible": 0,
+        "actual": 19,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      }
+    },
+    "FINANCIAL": {
+      "ent_type": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 11,
+        "possible": 0,
+        "actual": 11,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "partial": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 11,
+        "possible": 0,
+        "actual": 11,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "strict": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 11,
+        "possible": 0,
+        "actual": 11,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "exact": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 11,
+        "possible": 0,
+        "actual": 11,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      }
+    },
+    "IDNUM": {
+      "ent_type": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 23,
+        "possible": 0,
+        "actual": 23,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "partial": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 23,
+        "possible": 0,
+        "actual": 23,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "strict": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 23,
+        "possible": 0,
+        "actual": 23,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "exact": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 23,
+        "possible": 0,
+        "actual": 23,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      }
+    },
+    "LOCATION": {
+      "ent_type": {
+        "correct": 17,
+        "incorrect": 8,
+        "partial": 0,
+        "missed": 1,
+        "spurious": 61,
+        "possible": 26,
+        "actual": 86,
+        "precision": 0.19767441860465115,
+        "recall": 0.6538461538461539,
+        "f1": 0.30357142857142855
+      },
+      "partial": {
+        "correct": 17,
+        "incorrect": 0,
+        "partial": 8,
+        "missed": 1,
+        "spurious": 61,
+        "possible": 26,
+        "actual": 86,
+        "precision": 0.2441860465116279,
+        "recall": 0.8076923076923077,
+        "f1": 0.375
+      },
+      "strict": {
+        "correct": 14,
+        "incorrect": 11,
+        "partial": 0,
+        "missed": 1,
+        "spurious": 61,
+        "possible": 26,
+        "actual": 86,
+        "precision": 0.16279069767441862,
+        "recall": 0.5384615384615384,
+        "f1": 0.25000000000000006
+      },
+      "exact": {
+        "correct": 17,
+        "incorrect": 8,
+        "partial": 0,
+        "missed": 1,
+        "spurious": 61,
+        "possible": 26,
+        "actual": 86,
+        "precision": 0.19767441860465115,
+        "recall": 0.6538461538461539,
+        "f1": 0.30357142857142855
+      }
+    },
+    "NAME": {
+      "ent_type": {
+        "correct": 21,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 6,
+        "spurious": 90,
+        "possible": 27,
+        "actual": 111,
+        "precision": 0.1891891891891892,
+        "recall": 0.7777777777777778,
+        "f1": 0.30434782608695654
+      },
+      "partial": {
+        "correct": 18,
+        "incorrect": 0,
+        "partial": 3,
+        "missed": 6,
+        "spurious": 90,
+        "possible": 27,
+        "actual": 111,
+        "precision": 0.17567567567567569,
+        "recall": 0.7222222222222222,
+        "f1": 0.28260869565217395
+      },
+      "strict": {
+        "correct": 18,
+        "incorrect": 3,
+        "partial": 0,
+        "missed": 6,
+        "spurious": 90,
+        "possible": 27,
+        "actual": 111,
+        "precision": 0.16216216216216217,
+        "recall": 0.6666666666666666,
+        "f1": 0.26086956521739135
+      },
+      "exact": {
+        "correct": 18,
+        "incorrect": 3,
+        "partial": 0,
+        "missed": 6,
+        "spurious": 90,
+        "possible": 27,
+        "actual": 111,
+        "precision": 0.16216216216216217,
+        "recall": 0.6666666666666666,
+        "f1": 0.26086956521739135
+      }
+    },
+    "ORG": {
+      "ent_type": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 5,
+        "possible": 0,
+        "actual": 5,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "partial": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 5,
+        "possible": 0,
+        "actual": 5,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "strict": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 5,
+        "possible": 0,
+        "actual": 5,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "exact": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 5,
+        "possible": 0,
+        "actual": 5,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      }
+    },
+    "VEHICLE": {
+      "ent_type": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 26,
+        "possible": 0,
+        "actual": 26,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "partial": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 26,
+        "possible": 0,
+        "actual": 26,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "strict": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 26,
+        "possible": 0,
+        "actual": 26,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      },
+      "exact": {
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "missed": 0,
+        "spurious": 26,
+        "possible": 0,
+        "actual": 26,
+        "precision": 0.0,
+        "recall": 0,
+        "f1": 0.0
+      }
+    }
+  },
+  "error_analysis": {
+    "false_positives_by_type": {
+      "CONTACT": 20,
+      "LOCATION": 51,
+      "VEHICLE": 18,
+      "NAME": 79,
+      "ORG": 5,
+      "DATE": 20,
+      "CRYPTO": 10,
+      "OTHER": 3,
+      "FINANCIAL": 5,
+      "IDNUM": 10,
+      "DIGITAL": 10
+    },
+    "false_negatives_by_type": {
+      "NAME": 6,
+      "FINANCIAL": 6,
+      "DIGITAL": 8,
+      "OTHER": 3,
+      "IDNUM": 1,
+      "LOCATION": 1
+    },
+    "type_confusion_matrix": {
+      "DIGITAL": {
+        "VEHICLE": 3,
+        "NAME": 2
+      },
+      "OTHER": {
+        "FINANCIAL": 1,
+        "VEHICLE": 3,
+        "LOCATION": 2
+      },
+      "FINANCIAL": {
+        "IDNUM": 1,
+        "NAME": 1
+      },
+      "LOCATION": {
+        "VEHICLE": 1,
+        "NAME": 2,
+        "CONTACT": 2
+      },
+      "CONTACT": {
+        "NAME": 1
+      },
+      "IDNUM": {
+        "FINANCIAL": 1
+      }
+    },
+    "top_fp_examples": {
+      "CONTACT": [
+        {
+          "text": "http://www.anderson-evans.com/",
+          "sample_id": 0
+        },
+        {
+          "text": "1078",
+          "sample_id": 0
+        },
+        {
+          "text": "336",
+          "sample_id": 7
+        },
+        {
+          "text": "18541151",
+          "sample_id": 10
+        },
+        {
+          "text": "770",
+          "sample_id": 10
+        }
+      ],
+      "LOCATION": [
+        {
+          "text": "Fonds",
+          "sample_id": 1
+        },
+        {
+          "text": "[34.153, -117.5]",
+          "sample_id": 2
+        },
+        {
+          "text": "63043",
+          "sample_id": 6
+        },
+        {
+          "text": "263",
+          "sample_id": 7
+        },
+        {
+          "text": "Torre",
+          "sample_id": 9
+        }
+      ],
+      "VEHICLE": [
+        {
+          "text": "1899 9823 1593 1522 1",
+          "sample_id": 1
+        },
+        {
+          "text": "N795HR6K99PJP8Y4U",
+          "sample_id": 1
+        },
+        {
+          "text": "98KJM17A96ZHUGW91",
+          "sample_id": 3
+        },
+        {
+          "text": "SM355",
+          "sample_id": 9
+        },
+        {
+          "text": "VRM9",
+          "sample_id": 24
+        }
+      ],
+      "NAME": [
+        {
+          "text": "Arbeitsbereich",
+          "sample_id": 1
+        },
+        {
+          "text": "Courriel",
+          "sample_id": 5
+        },
+        {
+          "text": "Sexe",
+          "sample_id": 7
+        },
+        {
+          "text": "Homme",
+          "sample_id": 7
+        },
+        {
+          "text": "Zelfvertrouwen kan echt invloed hebben op carri\u00e8resucces",
+          "sample_id": 8
+        }
+      ],
+      "ORG": [
+        {
+          "text": "Hancock and Sons",
+          "sample_id": 2
+        },
+        {
+          "text": "Ace",
+          "sample_id": 9
+        },
+        {
+          "text": "Group",
+          "sample_id": 9
+        },
+        {
+          "text": "Wilkinson, Davies and Goddard",
+          "sample_id": 15
+        },
+        {
+          "text": "Barones",
+          "sample_id": 27
+        }
+      ],
+      "DATE": [
+        {
+          "text": "12:37am",
+          "sample_id": 2
+        },
+        {
+          "text": "21e, 2080",
+          "sample_id": 3
+        },
+        {
+          "text": "01:22",
+          "sample_id": 3
+        },
+        {
+          "text": "14/06/2058",
+          "sample_id": 7
+        },
+        {
+          "text": "6_2045",
+          "sample_id": 10
+        }
+      ],
+      "CRYPTO": [
+        {
+          "text": "0x9fb08aa955618551f422749ffe1cabdeb9ee792d",
+          "sample_id": 2
+        },
+        {
+          "text": "LLasySjBn3q2ZCm08G0wrvBAPwLLPBQuv6",
+          "sample_id": 29
+        },
+        {
+          "text": "LR2hFJe5Jpo2Uu9G4YTAYL8WcPsSBXJPu8",
+          "sample_id": 41
+        },
+        {
+          "text": "35wgo8AFsjGnoAQlf75zeof5EkuIFBwZxd",
+          "sample_id": 42
+        },
+        {
+          "text": "L7FJ1DA7avHrHgMugJIZwclq1FEMTVNzYU",
+          "sample_id": 52
+        }
+      ],
+      "OTHER": [
+        {
+          "text": "3",
+          "sample_id": 5
+        },
+        {
+          "text": "3",
+          "sample_id": 25
+        },
+        {
+          "text": "82",
+          "sample_id": 51
+        }
+      ],
+      "FINANCIAL": [
+        {
+          "text": "CH82941140321244523",
+          "sample_id": 9
+        },
+        {
+          "text": "18541151",
+          "sample_id": 10
+        },
+        {
+          "text": "770",
+          "sample_id": 10
+        },
+        {
+          "text": "CH42791031289960375",
+          "sample_id": 64
+        },
+        {
+          "text": "US0037919104A532105",
+          "sample_id": 80
+        }
+      ],
+      "IDNUM": [
+        {
+          "text": "525631533",
+          "sample_id": 10
+        },
+        {
+          "text": "0637838",
+          "sample_id": 52
+        },
+        {
+          "text": "21DU27734",
+          "sample_id": 62
+        },
+        {
+          "text": "1790",
+          "sample_id": 67
+        },
+        {
+          "text": "9272082728",
+          "sample_id": 67
+        }
+      ],
+      "DIGITAL": [
+        {
+          "text": "201503-2182",
+          "sample_id": 18
+        },
+        {
+          "text": "Opera/9.19.(Windows NT 5.01; ka-GE) Presto/2.9.190 Version/11.00",
+          "sample_id": 29
+        },
+        {
+          "text": "Mozilla/5.0 (iPod; U; CPU iPhone OS 3_3 like Mac OS X; hy-AM) AppleWebKit/533.23.1 (KHTML, like Gecko) Version/4.0.5 Mobile/8B112 Safari/6533.23.1",
+          "sample_id": 49
+        },
+        {
+          "text": "48:dc:78:d2:51:2e",
+          "sample_id": 68
+        },
+        {
+          "text": "Mozilla/5.0 (X11; Linux x86_64; rv:1.9.5.20) Gecko/5814-01-03",
+          "sample_id": 86
+        }
+      ]
+    },
+    "top_fn_examples": {
+      "NAME": [
+        {
+          "text": "Shuajb",
+          "sample_id": 1
+        },
+        {
+          "text": "Karvounakis",
+          "sample_id": 5
+        },
+        {
+          "text": "Amasi",
+          "sample_id": 14
+        },
+        {
+          "text": "En",
+          "sample_id": 35
+        },
+        {
+          "text": "Gecilda",
+          "sample_id": 40
+        }
+      ],
+      "FINANCIAL": [
+        {
+          "text": "WGR808623E",
+          "sample_id": 4
+        },
+        {
+          "text": "F6543034K",
+          "sample_id": 28
+        },
+        {
+          "text": "R0648482",
+          "sample_id": 39
+        },
+        {
+          "text": "F0672882I",
+          "sample_id": 45
+        },
+        {
+          "text": "UT71543LU",
+          "sample_id": 84
+        }
+      ],
+      "DIGITAL": [
+        {
+          "text": "kasjshfa1258",
+          "sample_id": 20
+        },
+        {
+          "text": "U#$^PXk?2&",
+          "sample_id": 41
+        },
+        {
+          "text": "h8Edc2[h",
+          "sample_id": 44
+        },
+        {
+          "text": "kuyhlib98143",
+          "sample_id": 59
+        },
+        {
+          "text": "kuyhlib98143",
+          "sample_id": 59
+        }
+      ],
+      "OTHER": [
+        {
+          "text": "Q5412370X",
+          "sample_id": 45
+        },
+        {
+          "text": "5",
+          "sample_id": 91
+        },
+        {
+          "text": "7",
+          "sample_id": 92
+        }
+      ],
+      "IDNUM": [
+        {
+          "text": "683344387669",
+          "sample_id": 77
+        }
+      ],
+      "LOCATION": [
+        {
+          "text": "Via Ballottino",
+          "sample_id": 87
+        }
+      ]
+    }
+  }
+}

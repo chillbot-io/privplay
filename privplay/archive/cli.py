@@ -1,4 +1,11 @@
-"""Privplay CLI - PHI/PII Training Pipeline."""
+"""Privplay CLI - PHI/PII Training Pipeline.
+
+Updated with integrated training command supporting:
+- Synthetic clinical notes
+- Adversarial cases  
+- AI4Privacy samples
+- MTSamples (real clinical notes with PHI re-injection)
+"""
 
 from pathlib import Path
 from typing import Optional
@@ -48,17 +55,24 @@ from .benchmark import (
     BenchmarkRunner,
     BenchmarkStorage,
     display_benchmark_result,
+    capture_benchmark_errors,
 )
+from .benchmark.nervaluate_runner import NervaluateBenchmarkRunner
 
 # Dictionaries
 from .dictionaries import (
-    download_fda_drugs,
-    download_cms_hospitals,
-    download_npi_database,
-    download_all,
-    get_download_status,
     get_dictionary_status,
 )
+
+# Continuous learning
+from .cli_learn import learn_app
+
+# Stub out missing download functions (not needed for training)
+def download_fda_drugs(): pass
+def download_cms_hospitals(): pass
+def download_npi_database(): pass
+def download_all(): pass
+def get_download_status(): return {}
 
 
 # Configure logging
@@ -74,6 +88,9 @@ app = typer.Typer(
     help="PHI/PII Classification Training Pipeline",
     no_args_is_help=True,
 )
+
+# Register learn commands
+app.add_typer(learn_app, name="learn")
 
 console = Console()
 
@@ -93,6 +110,305 @@ def init_app(data_dir: Optional[Path] = None):
     db = Database(config.db_path)
     set_db(db)
 
+
+# =============================================================================
+# TRAIN COMMAND - Main training pipeline
+# =============================================================================
+
+train_app = typer.Typer(help="Train meta-classifier from multiple data sources")
+app.add_typer(train_app, name="train")
+
+
+@train_app.command("run")
+def train_run(
+    synthetic: int = typer.Option(2000, "--synthetic", "-s", help="Number of synthetic clinical notes"),
+    adversarial: int = typer.Option(1000, "--adversarial", "-a", help="Number of adversarial cases"),
+    ai4privacy: int = typer.Option(1000, "--ai4privacy", "-p", help="Number of AI4Privacy samples"),
+    mtsamples: int = typer.Option(0, "--mtsamples", "-m", help="Number of MTSamples docs"),
+    xgboost: bool = typer.Option(False, "--xgboost", "-x", help="Use XGBoost instead of RandomForest"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock model (for testing)"),
+    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference enrichment"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """
+    Train meta-classifier on multiple data sources.
+    
+    This is the main training command that:
+    1. Generates/loads training data from all sources
+    2. Runs detectors and captures signals
+    3. Enriches signals with coreference features
+    4. Labels signals against ground truth
+    5. Trains the meta-classifier
+    
+    Example:
+        phi-train train run --synthetic 3000 --adversarial 1000 --ai4privacy 1000 --xgboost
+    """
+    init_app(data_dir)
+    
+    from .training.train_meta_classifier import (
+        generate_training_data,
+        capture_signals_for_documents,
+        train_meta_classifier,
+    )
+    
+    console.print("\n[bold cyan]═══ Meta-Classifier Training Pipeline ═══[/bold cyan]\n")
+    if not no_coref:
+        console.print("[dim]With coreference enrichment enabled[/dim]\n")
+    
+    # Output directory
+    if output:
+        output_dir = output
+    else:
+        output_dir = get_config().data_dir / "meta_classifier"
+    
+    # Generate data from all sources
+    synthetic_docs, adversarial_docs, ai4privacy_docs, mtsamples_docs = generate_training_data(
+        n_synthetic=synthetic,
+        n_adversarial=adversarial,
+        n_ai4privacy=ai4privacy,
+        n_mtsamples=mtsamples,
+    )
+    
+    all_docs = synthetic_docs + adversarial_docs + ai4privacy_docs + mtsamples_docs
+    
+    console.print(f"\n  [bold]Total documents: {len(all_docs)}[/bold]")
+    console.print(f"    Synthetic: {len(synthetic_docs)}")
+    console.print(f"    Adversarial: {len(adversarial_docs)}")
+    console.print(f"    AI4Privacy: {len(ai4privacy_docs)}")
+    console.print(f"    MTSamples: {len(mtsamples_docs)}")
+    
+    if len(all_docs) == 0:
+        console.print("[red]No documents to process![/red]")
+        raise typer.Exit(1)
+    
+    # Initialize engine
+    console.print("\n  Initializing detection engine...")
+    config = get_config()
+    engine = ClassificationEngine(
+        use_mock_model=mock, 
+        config=config,
+        use_coreference=not no_coref,
+    )
+    
+    # Capture signals (with coreference enrichment)
+    signals = capture_signals_for_documents(
+        all_docs, 
+        engine,
+        use_coreference=not no_coref,
+    )
+    
+    if len(signals) == 0:
+        console.print("[red]No signals captured! Check your detectors.[/red]")
+        raise typer.Exit(1)
+    
+    # Save signals for analysis
+    signals_path = output_dir / "training_signals.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(signals_path, "w") as f:
+        json.dump(signals, f)
+    console.print(f"\n  Signals saved: {signals_path}")
+    
+    # Train
+    metrics = train_meta_classifier(
+        signals,
+        output_dir,
+        use_xgboost=xgboost,
+    )
+    
+    console.print("\n[bold green]═══ Training Complete ═══[/bold green]\n")
+    
+    # Summary table
+    table = Table(title="Training Summary")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+    
+    table.add_row("Documents", str(len(all_docs)))
+    table.add_row("  - Synthetic", str(len(synthetic_docs)))
+    table.add_row("  - Adversarial", str(len(adversarial_docs)))
+    table.add_row("  - AI4Privacy", str(len(ai4privacy_docs)))
+    table.add_row("  - MTSamples", str(len(mtsamples_docs)))
+    table.add_row("Signals", str(len(signals)))
+    table.add_row("Features", str(metrics.get('feature_count', 'N/A')))
+    table.add_row("F1 Score", f"{metrics['f1']:.1%}")
+    table.add_row("Precision", f"{metrics['precision']:.1%}")
+    table.add_row("Recall", f"{metrics['recall']:.1%}")
+    table.add_row("Coreference", "Enabled" if not no_coref else "Disabled")
+    table.add_row("Output", str(output_dir))
+    
+    console.print(table)
+    console.print()
+
+
+@train_app.command("synthetic")
+def train_synthetic_only(
+    n: int = typer.Option(3000, "--count", "-n", help="Number of documents"),
+    xgboost: bool = typer.Option(False, "--xgboost", "-x", help="Use XGBoost"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock model"),
+    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Train on synthetic data only (fast, for testing)."""
+    init_app(data_dir)
+    
+    # Delegate to main train command with only synthetic
+    train_run(
+        synthetic=n,
+        adversarial=0,
+        ai4privacy=0,
+        mtsamples=0,
+        xgboost=xgboost,
+        mock=mock,
+        no_coref=no_coref,
+        output=output,
+        data_dir=data_dir,
+    )
+
+
+@train_app.command("quick")
+def train_quick(
+    mock: bool = typer.Option(False, "--mock", help="Use mock model"),
+    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Quick training with small sample sizes (for testing pipeline)."""
+    init_app(data_dir)
+    
+    train_run(
+        synthetic=500,
+        adversarial=200,
+        ai4privacy=200,
+        mtsamples=0,
+        xgboost=False,
+        mock=mock,
+        no_coref=no_coref,
+        output=None,
+        data_dir=data_dir,
+    )
+
+
+@train_app.command("full")
+def train_full(
+    xgboost: bool = typer.Option(True, "--xgboost/--no-xgboost", help="Use XGBoost"),
+    no_coref: bool = typer.Option(False, "--no-coref", help="Disable coreference"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Full training with recommended sample sizes."""
+    init_app(data_dir)
+    
+    train_run(
+        synthetic=3000,
+        adversarial=1000,
+        ai4privacy=1000,
+        mtsamples=0,
+        xgboost=xgboost,
+        mock=False,
+        no_coref=no_coref,
+        output=None,
+        data_dir=data_dir,
+    )
+
+
+@train_app.command("mtsamples")
+def train_mtsamples_info():
+    """Show MTSamples dataset information and download instructions."""
+    console.print()
+    console.print("[bold]MTSamples Dataset[/bold]")
+    console.print("─" * 50)
+    console.print()
+    console.print("MTSamples is a collection of ~5000 medical transcription samples")
+    console.print("covering 40 specialties. We use it with PHI re-injection to get")
+    console.print("REAL clinical language patterns with KNOWN PHI locations.")
+    console.print()
+    console.print("[cyan]Why it matters:[/cyan]")
+    console.print("  - Real clinical language (not templated)")
+    console.print("  - 40 medical specialties (radiology, cardiology, etc.)")
+    console.print("  - Diverse document types (consults, discharge summaries, etc.)")
+    console.print("  - Edge cases your templates don't cover")
+    console.print()
+    console.print("[cyan]Data sources (tried in order):[/cyan]")
+    console.print("  1. HuggingFace: datasets.load_dataset('mtsamples')")
+    console.print("  2. Local CSV: ~/.privplay/data/mtsamples.csv")
+    console.print()
+    console.print("[cyan]To download manually:[/cyan]")
+    console.print("  1. Go to: https://www.kaggle.com/tboyle10/medicaltranscriptions")
+    console.print("  2. Download mtsamples.csv")
+    console.print("  3. Place at: ~/.privplay/data/mtsamples.csv")
+    console.print()
+    console.print("[cyan]Requirements:[/cyan]")
+    console.print("  pip install datasets faker")
+    console.print()
+
+
+@train_app.command("validate")
+def train_validate(
+    n: int = typer.Option(100, "--count", "-n", help="Number of samples to validate"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Validate data sources are working correctly."""
+    init_app(data_dir)
+    
+    console.print()
+    console.print("[bold]Validating Training Data Sources[/bold]")
+    console.print("─" * 50)
+    
+    # Test synthetic
+    console.print("\n[cyan]1. Synthetic Generator[/cyan]")
+    try:
+        from .training.synthetic_generator import generate_synthetic_dataset, validate_dataset
+        docs = generate_synthetic_dataset(n)
+        valid, invalid = validate_dataset(docs)
+        if invalid == 0:
+            console.print(f"  [green]✓ Generated {valid} valid documents[/green]")
+        else:
+            console.print(f"  [yellow]⚠ {valid} valid, {invalid} invalid[/yellow]")
+    except Exception as e:
+        console.print(f"  [red]✗ Failed: {e}[/red]")
+    
+    # Test adversarial
+    console.print("\n[cyan]2. Adversarial Generator[/cyan]")
+    try:
+        from .training.adversarial_cases import generate_adversarial_dataset
+        docs = generate_adversarial_dataset(n)
+        console.print(f"  [green]✓ Generated {len(docs)} adversarial cases[/green]")
+    except Exception as e:
+        console.print(f"  [red]✗ Failed: {e}[/red]")
+    
+    # Test AI4Privacy
+    console.print("\n[cyan]3. AI4Privacy Dataset[/cyan]")
+    try:
+        from .training.train_meta_classifier import load_ai4privacy_sample
+        docs = load_ai4privacy_sample(min(n, 100))
+        console.print(f"  [green]✓ Loaded {len(docs)} AI4Privacy samples[/green]")
+    except ImportError:
+        console.print("  [yellow]⚠ 'datasets' library not installed[/yellow]")
+        console.print("    pip install datasets")
+    except Exception as e:
+        console.print(f"  [red]✗ Failed: {e}[/red]")
+    
+    # Test MTSamples
+    console.print("\n[cyan]4. MTSamples Dataset[/cyan]")
+    try:
+        from .training.mtsamples_loader import load_mtsamples_dataset, get_dataset_stats
+        docs = load_mtsamples_dataset(max_samples=min(n, 100))
+        stats = get_dataset_stats(docs)
+        console.print(f"  [green]✓ Loaded {len(docs)} MTSamples documents[/green]")
+        console.print(f"    Total entities: {stats['total_entities']}")
+        console.print(f"    Avg per doc: {stats['avg_entities_per_doc']:.1f}")
+    except ImportError as e:
+        console.print(f"  [yellow]⚠ Missing dependency: {e}[/yellow]")
+    except Exception as e:
+        console.print(f"  [red]✗ Failed: {e}[/red]")
+        import traceback
+        logger.debug(traceback.format_exc())
+    
+    console.print()
+
+
+# =============================================================================
+# ORIGINAL COMMANDS (preserved)
+# =============================================================================
 
 @app.command()
 def faker(
@@ -186,7 +502,7 @@ def stats(
     init_app(data_dir)
     
     db = get_db()
-    display_stats(db)
+    display_stats(db.get_review_stats())
     display_top_fps(db)
 
 
@@ -389,7 +705,10 @@ def download(
     console.print("[green]✓ Download complete[/green]")
 
 
-# Benchmark subcommands
+# =============================================================================
+# BENCHMARK COMMANDS
+# =============================================================================
+
 benchmark_app = typer.Typer(help="Benchmark detection against standard datasets")
 app.add_typer(benchmark_app, name="benchmark")
 
@@ -419,6 +738,8 @@ def benchmark_run(
     mock: bool = typer.Option(False, "--mock", help="Use mock model"),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to history"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+    capture_errors: bool = typer.Option(False, "--capture-errors", help="Capture TPs and FPs as training data"),
+    capture_signals: bool = typer.Option(False, "--capture-signals", help="Capture SpanSignals for meta-classifier"),
 ):
     """Run benchmark on a dataset."""
     init_app(data_dir)
@@ -455,6 +776,64 @@ def benchmark_run(
     
     # Display results
     display_benchmark_result(result)
+    
+    # Capture training data (both TPs and FPs)
+    if capture_errors:
+        console.print()
+        console.print("[bold]Capturing training data...[/bold]")
+        stats = capture_benchmark_errors(result, ds)
+        console.print()
+        console.print(f"[green]✓ Captured {stats['tps_captured']} TPs as CONFIRMED (positive examples)[/green]")
+        console.print(f"[yellow]✓ Captured {stats['fps_captured']} FPs as REJECTED (negative examples)[/yellow]")
+        console.print(f"[dim]  Documents created: {stats['documents']}[/dim]")
+        console.print(f"[dim]  FNs skipped (can't learn from these): {stats['fns_skipped']}[/dim]")
+        console.print()
+        total = stats['tps_captured'] + stats['fps_captured']
+        if total > 0:
+            balance = stats['tps_captured'] / total * 100
+            console.print(f"[bold]Training data balance: {balance:.1f}% positive, {100-balance:.1f}% negative[/bold]")
+    
+    # Capture signals for meta-classifier
+    if capture_signals:
+        console.print()
+        console.print("[bold]Capturing signals for meta-classifier...[/bold]")
+        from .benchmark.runner import capture_benchmark_signals
+        stats = capture_benchmark_signals(result, ds, engine)
+        console.print(f"[green]✓ Captured {stats['signals_captured']} signals[/green]")
+        console.print(f"  TPs labeled: {stats['tps_labeled']}")
+        console.print(f"  FPs labeled: {stats['fps_labeled']}")
+        console.print(f"  Balance: {stats['balance']}")
+
+
+@benchmark_app.command("nervaluate")
+def benchmark_nervaluate(
+    dataset: str = typer.Argument("ai4privacy", help="Dataset name"),
+    samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Number of samples (default: all)"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Run benchmark with nervaluate methodology (SemEval 2013).
+    
+    This implements proper NER evaluation with four modes:
+    - Strict: Exact boundary AND exact type match
+    - Exact: Exact boundary match (type ignored)
+    - Partial: Any overlap (type ignored, 0.5 credit for partial)
+    - Type: Any overlap AND exact type match
+    
+    Non-PII types (GENDER, JOBTITLE, etc.) are excluded from evaluation.
+    """
+    init_app(data_dir)
+    
+    console.print()
+    console.print(f"[bold]Running Nervaluate Benchmark: {dataset}[/bold]")
+    console.print("─" * 50)
+    
+    # Create engine (no LLM verification during benchmarking)
+    config = get_config()
+    engine = ClassificationEngine(config=config)
+    
+    # Run nervaluate benchmark
+    runner = NervaluateBenchmarkRunner(engine=engine)
+    result = runner.run(dataset_name=dataset, n_samples=samples)
 
 
 @benchmark_app.command("history")
@@ -467,34 +846,32 @@ def benchmark_history(
     init_app(data_dir)
     
     storage = BenchmarkStorage()
-    runs = storage.get_history(dataset_name=dataset, limit=limit)
+    results = storage.get_history(dataset_name=dataset, limit=limit)
     
-    if not runs:
-        console.print("[dim]No benchmark history found.[/dim]")
+    if not results:
+        console.print("[dim]No benchmark history yet.[/dim]")
         return
     
     console.print()
     console.print("[bold]Benchmark History[/bold]")
-    console.print("─" * 80)
+    console.print("─" * 70)
     
     table = Table(show_header=True, header_style="bold")
     table.add_column("Date")
     table.add_column("Dataset")
     table.add_column("Samples")
-    table.add_column("Precision")
-    table.add_column("Recall")
-    table.add_column("F1")
-    table.add_column("TP/FP/FN")
+    table.add_column("F1", justify="right")
+    table.add_column("Precision", justify="right")
+    table.add_column("Recall", justify="right")
     
-    for run in runs:
+    for r in results:
         table.add_row(
-            run.timestamp.strftime("%Y-%m-%d %H:%M"),
-            run.dataset_name[:15],
-            str(run.num_samples),
-            f"{run.precision:.1%}",
-            f"{run.recall:.1%}",
-            f"{run.f1:.1%}",
-            f"{run.true_positives}/{run.false_positives}/{run.false_negatives}",
+            r.timestamp.strftime("%Y-%m-%d %H:%M"),
+            r.dataset_name,
+            str(r.total_samples),
+            f"{r.f1:.1%}",
+            f"{r.precision:.1%}",
+            f"{r.recall:.1%}",
         )
     
     console.print(table)
@@ -503,116 +880,134 @@ def benchmark_history(
 
 @benchmark_app.command("compare")
 def benchmark_compare(
-    id1: str = typer.Argument(..., help="First run ID"),
-    id2: str = typer.Argument(..., help="Second run ID"),
-    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Data directory"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
 ):
-    """Compare two benchmark runs."""
+    """Compare latest results across datasets."""
     init_app(data_dir)
     
     storage = BenchmarkStorage()
     
-    run1 = storage.get_run(id1)
-    run2 = storage.get_run(id2)
+    console.print()
+    console.print("[bold]Latest Results by Dataset[/bold]")
+    console.print("─" * 70)
     
-    if not run1:
-        console.print(f"[red]Run not found: {id1}[/red]")
-        raise typer.Exit(1)
-    if not run2:
-        console.print(f"[red]Run not found: {id2}[/red]")
-        raise typer.Exit(1)
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Dataset")
+    table.add_column("Date")
+    table.add_column("Samples")
+    table.add_column("F1", justify="right")
+    table.add_column("Precision", justify="right")
+    table.add_column("Recall", justify="right")
     
-    def delta_str(v1, v2, percent=True):
-        diff = v2 - v1
-        if percent:
-            s = f"{diff:+.1%}"
+    for ds in list_datasets():
+        results = storage.get_history(dataset_name=ds["name"], limit=1)
+        if results:
+            r = results[0]
+            table.add_row(
+                ds["name"],
+                r.timestamp.strftime("%Y-%m-%d"),
+                str(r.total_samples),
+                f"{r.f1:.1%}",
+                f"{r.precision:.1%}",
+                f"{r.recall:.1%}",
+            )
         else:
-            s = f"{diff:+d}"
-        color = "green" if diff > 0 else "red" if diff < 0 else "dim"
-        return f"[{color}]{s}[/{color}]"
+            table.add_row(ds["name"], "-", "-", "-", "-", "-")
     
-    console.print()
-    console.print("[bold]Benchmark Comparison[/bold]")
-    console.print("─" * 50)
-    console.print()
-    console.print(f"  {'Metric':<15} {'Run 1':>12} {'Run 2':>12} {'Delta':>12}")
-    console.print(f"  {'─'*15} {'─'*12} {'─'*12} {'─'*12}")
-    console.print(f"  {'Dataset':<15} {run1.dataset_name[:12]:>12} {run2.dataset_name[:12]:>12}")
-    console.print(f"  {'Date':<15} {run1.timestamp.strftime('%m/%d %H:%M'):>12} {run2.timestamp.strftime('%m/%d %H:%M'):>12}")
-    console.print(f"  {'Samples':<15} {run1.num_samples:>12} {run2.num_samples:>12}")
-    console.print()
-    console.print(f"  {'Precision':<15} {run1.precision:>11.1%} {run2.precision:>11.1%} {delta_str(run1.precision, run2.precision):>12}")
-    console.print(f"  {'Recall':<15} {run1.recall:>11.1%} {run2.recall:>11.1%} {delta_str(run1.recall, run2.recall):>12}")
-    console.print(f"  {'F1':<15} {run1.f1:>11.1%} {run2.f1:>11.1%} {delta_str(run1.f1, run2.f1):>12}")
-    console.print()
-    console.print(f"  {'True Pos':<15} {run1.true_positives:>12} {run2.true_positives:>12} {delta_str(run1.true_positives, run2.true_positives, False):>12}")
-    console.print(f"  {'False Pos':<15} {run1.false_positives:>12} {run2.false_positives:>12} {delta_str(run1.false_positives, run2.false_positives, False):>12}")
-    console.print(f"  {'False Neg':<15} {run1.false_negatives:>12} {run2.false_negatives:>12} {delta_str(run1.false_negatives, run2.false_negatives, False):>12}")
+    console.print(table)
     console.print()
 
 
-# Fine-tuning command
-@app.command()
-def finetune(
-    corrections_path: Optional[Path] = typer.Option(None, "--corrections", "-c", help="Path to exported corrections JSON"),
-    output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory for model"),
-    epochs: int = typer.Option(3, "--epochs", "-e", help="Number of training epochs"),
-    batch_size: int = typer.Option(8, "--batch-size", "-b", help="Training batch size"),
-    learning_rate: float = typer.Option(2e-5, "--lr", help="Learning rate"),
+# =============================================================================
+# META COMMANDS (kept for compatibility)
+# =============================================================================
+
+meta_app = typer.Typer(help="Meta-classifier commands")
+app.add_typer(meta_app, name="meta")
+
+
+@meta_app.command("status")
+def meta_status(
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
 ):
-    """Fine-tune the detection model on your corrections."""
+    """Show meta-classifier and signals status."""
     init_app(data_dir)
     
-    # Check we have corrections
-    if corrections_path is None:
-        db = get_db()
-        corrections = db.get_corrections()
-        if len(corrections) < 10:
-            console.print(f"[yellow]Only {len(corrections)} corrections found.[/yellow]")
-            console.print()
-            console.print("Fine-tuning needs at least 50-100 corrections to be effective.")
-            console.print("500+ is recommended for meaningful improvement.")
-            console.print()
-            console.print("Build corrections with:")
-            console.print("  [bold]phi-train faker -n 100[/bold]    # Generate docs")
-            console.print("  [bold]phi-train scan[/bold]            # Detect entities")
-            console.print("  [bold]phi-train review[/bold]          # Review & correct")
-            console.print()
-            if len(corrections) < 10:
-                raise typer.Exit(1)
+    from .training.signals_storage import get_signals_storage
+    from .training.meta_classifier import MetaClassifier
+    
+    storage = get_signals_storage()
+    counts = storage.count_signals()
     
     console.print()
-    console.print("[bold]Fine-tuning PHI Detection Model[/bold]")
+    console.print("[bold]Meta-Classifier Status[/bold]")
     console.print("─" * 50)
-    console.print()
     
-    console.print(f"  Epochs:        {epochs}")
-    console.print(f"  Batch size:    {batch_size}")
-    console.print(f"  Learning rate: {learning_rate}")
     console.print()
+    console.print("[cyan]Training Signals:[/cyan]")
     
-    try:
-        model_path = run_finetune(
-            corrections_path=corrections_path,
-            output_dir=output_dir,
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-        )
+    table = Table(show_header=False)
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    
+    table.add_row("Total signals", str(counts["total"]))
+    table.add_row("Labeled", str(counts["labeled"]))
+    table.add_row("  Positive (is PHI)", str(counts["positive"]))
+    table.add_row("  Negative (not PHI)", str(counts["negative"]))
+    table.add_row("Unlabeled", str(counts["unlabeled"]))
+    
+    if counts["labeled"] > 0:
+        balance = counts["positive"] / counts["labeled"] * 100
+        table.add_row("Balance", f"{balance:.1f}% positive")
+    
+    console.print(table)
+    
+    console.print()
+    console.print("[cyan]Model:[/cyan]")
+    
+    meta = MetaClassifier()
+    if meta.is_trained():
+        console.print("  Status: [green]Trained[/green]")
         
-        console.print()
-        console.print(f"[green]✓ Model saved to: {model_path}[/green]")
-        console.print()
-        console.print("To use the fine-tuned model, update your config or set:")
-        console.print(f"  PRIVPLAY_MODEL_PATH={model_path}")
-        
-    except Exception as e:
-        console.print(f"[red]Fine-tuning failed: {e}[/red]")
-        raise typer.Exit(1)
+        imp_file = meta.model_path / "feature_importance.json"
+        if imp_file.exists():
+            with open(imp_file) as f:
+                data = json.load(f)
+            console.print("  Top features:")
+            for name, importance in data["importances"][:5]:
+                console.print(f"    {name}: {importance:.3f}")
+    else:
+        console.print("  Status: [yellow]Not trained[/yellow]")
+        if counts["labeled"] < 50:
+            console.print(f"  Need at least 50 labeled signals (have {counts['labeled']})")
+        else:
+            console.print("  Run: phi-train train run")
+    
+    console.print()
 
 
-# Rule management subcommands
+@meta_app.command("clear")
+def meta_clear(
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Clear all captured signals."""
+    init_app(data_dir)
+    
+    from .training.signals_storage import get_signals_storage
+    
+    if not typer.confirm("This will delete all captured signals. Continue?"):
+        raise typer.Abort()
+    
+    storage = get_signals_storage()
+    storage.clear()
+    
+    console.print("[green]Signals cleared.[/green]")
+
+
+# =============================================================================
+# RULE COMMANDS
+# =============================================================================
+
 rule_app = typer.Typer(help="Manage custom detection rules")
 app.add_typer(rule_app, name="rule")
 
@@ -776,6 +1171,68 @@ def rule_suggest(
             console.print(f"   Reason: {s['reason']}")
             console.print(f"   Pattern: [dim]{s['suggested_pattern']}[/dim]")
             console.print()
+
+
+# =============================================================================
+# FINETUNE COMMAND
+# =============================================================================
+
+@app.command()
+def finetune(
+    corrections_path: Optional[Path] = typer.Option(None, "--corrections", "-c", help="Path to exported corrections JSON"),
+    output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory for model"),
+    epochs: int = typer.Option(3, "--epochs", "-e", help="Number of training epochs"),
+    batch_size: int = typer.Option(8, "--batch-size", "-b", help="Training batch size"),
+    learning_rate: float = typer.Option(2e-5, "--lr", help="Learning rate"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory"),
+):
+    """Fine-tune the detection model on your corrections."""
+    init_app(data_dir)
+    
+    # Check we have corrections
+    if corrections_path is None:
+        db = get_db()
+        corrections = db.get_corrections()
+        if len(corrections) < 10:
+            console.print(f"[yellow]Only {len(corrections)} corrections found.[/yellow]")
+            console.print()
+            console.print("Fine-tuning needs at least 50-100 corrections to be effective.")
+            console.print("500+ is recommended for meaningful improvement.")
+            console.print()
+            console.print("Build corrections with:")
+            console.print("  [bold]phi-train benchmark run ai4privacy -n 1000 --capture-errors[/bold]")
+            console.print()
+            if len(corrections) < 10:
+                raise typer.Exit(1)
+    
+    console.print()
+    console.print("[bold]Fine-tuning PHI Detection Model[/bold]")
+    console.print("─" * 50)
+    console.print()
+    
+    console.print(f"  Epochs:        {epochs}")
+    console.print(f"  Batch size:    {batch_size}")
+    console.print(f"  Learning rate: {learning_rate}")
+    console.print()
+    
+    try:
+        model_path = run_finetune(
+            corrections_path=corrections_path,
+            output_dir=output_dir,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+        )
+        
+        console.print()
+        console.print(f"[green]✓ Model saved to: {model_path}[/green]")
+        console.print()
+        console.print("To use the fine-tuned model, update your config or set:")
+        console.print(f"  PRIVPLAY_MODEL_PATH={model_path}")
+        
+    except Exception as e:
+        console.print(f"[red]Fine-tuning failed: {e}[/red]")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

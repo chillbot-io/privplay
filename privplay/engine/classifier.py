@@ -168,7 +168,7 @@ class ClassificationEngine:
         use_coreference: bool = True,
         use_meta_classifier: bool = True,
     ):
-        self.config = config or get_config()\
+        self.config = config or get_config()
         
         # Meta-classifier for learned merge decisions
         self._meta_classifier = None
@@ -438,6 +438,9 @@ class ClassificationEngine:
         Merge entities from all detectors.
         
         Handles overlapping spans and conflicting types.
+        
+        FIXED: Now uses smart grouping that doesn't let one large span
+        swallow multiple distinct smaller spans.
         """
         # Tag source on entities
         for e in phi_entities:
@@ -449,48 +452,167 @@ class ClassificationEngine:
         if not all_entities:
             return []
         
-        # Validate entity positions (#6 - prevent silent corruption)
+        # Validate entity positions
         all_entities = self._validate_entity_positions(all_entities, text)
         
         if not all_entities:
             return []
         
-        # Sort by start position
-        all_entities.sort(key=lambda e: (e.start, -e.end))
+        # Sort by start position, longest first at each position
+        all_entities.sort(key=lambda e: (e.start, -(e.end - e.start)))
         
-        # Merge overlapping entities
+        # Group using smart overlap detection
+        groups = self._group_overlapping_smart(all_entities)
+        
+        # Merge each group (may produce multiple entities)
         merged = []
-        i = 0
-        while i < len(all_entities):
-            # Collect all overlapping with current
-            overlapping = [all_entities[i]]
-            j = i + 1
-            while j < len(all_entities):
-                if all_entities[j].start < overlapping[0].end:
-                    overlapping.append(all_entities[j])
-                    j += 1
-                else:
-                    break
+        for group in groups:
+            results = self._merge_or_split_group(group, text)
             
-            # Merge overlapping entities
-            result = self._merge_overlapping(overlapping, text)
-            
-            # Meta-classifier may reject the entity (return None)
-            if result is None:
-                i = j
-                continue
-            
-            merged.append(result)
-            
-            # Capture signals if enabled
-            if self.capture_signals:
-                signals = self._build_signals(overlapping, result, text)
-                self.captured_signals.append(signals)
-            
-            i = j
+            for result in results:
+                merged.append(result)
+                
+                # Capture signals if enabled
+                if self.capture_signals:
+                    signals = self._build_signals(group, result, text)
+                    self.captured_signals.append(signals)
         
         return merged
-    
+
+    def _group_overlapping_smart(self, entities: List[Entity]) -> List[List[Entity]]:
+        """
+        Group entities that truly overlap with each other.
+        
+        Key improvement: Build groups based on actual pairwise overlap,
+        not just "starts before first entity ends".
+        """
+        if not entities:
+            return []
+        
+        n = len(entities)
+        
+        # Build adjacency: which entities actually overlap?
+        overlaps = [set() for _ in range(n)]
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                e1, e2 = entities[i], entities[j]
+                # True overlap check
+                if e1.start < e2.end and e2.start < e1.end:
+                    overlaps[i].add(j)
+                    overlaps[j].add(i)
+        
+        # Find connected components (groups of mutually overlapping entities)
+        visited = [False] * n
+        groups = []
+        
+        for i in range(n):
+            if visited[i]:
+                continue
+            
+            # BFS to find all connected entities
+            group_indices = []
+            queue = [i]
+            visited[i] = True
+            
+            while queue:
+                curr = queue.pop(0)
+                group_indices.append(curr)
+                
+                for neighbor in overlaps[curr]:
+                    if not visited[neighbor]:
+                        visited[neighbor] = True
+                        queue.append(neighbor)
+            
+            # Sort group by start position
+            group_indices.sort(key=lambda idx: entities[idx].start)
+            groups.append([entities[idx] for idx in group_indices])
+        
+        # Sort groups by their first entity's start position
+        groups.sort(key=lambda g: g[0].start)
+        
+        return groups
+
+    def _merge_or_split_group(self, group: List[Entity], text: str) -> List[Entity]:
+        """
+        Decide whether to merge a group into one entity or split into multiple.
+        
+        If the group contains one large span and multiple smaller non-overlapping spans,
+        prefer the smaller spans (they're usually more precise tokenization).
+        """
+        if len(group) == 1:
+            result = self._merge_overlapping(group, text)
+            return [result] if result else []
+        
+        # Find the largest span
+        largest = max(group, key=lambda e: e.end - e.start)
+        largest_len = largest.end - largest.start
+        
+        # Find smaller spans (less than 70% of largest span length)
+        smaller = [e for e in group if (e.end - e.start) < largest_len * 0.7]
+        
+        if len(smaller) < 2:
+            result = self._merge_overlapping(group, text)
+            return [result] if result else []
+        
+        # Check if smaller spans are non-overlapping with each other
+        smaller_sorted = sorted(smaller, key=lambda e: e.start)
+        non_overlapping = []
+        last_end = -1
+        
+        for e in smaller_sorted:
+            if e.start >= last_end:
+                non_overlapping.append(e)
+                last_end = e.end
+            else:
+                # Overlaps - keep the better one
+                if non_overlapping:
+                    prev = non_overlapping[-1]
+                    prev_is_other = prev.entity_type == EntityType.OTHER
+                    curr_is_other = e.entity_type == EntityType.OTHER
+                    
+                    if prev_is_other and not curr_is_other:
+                        non_overlapping[-1] = e
+                        last_end = e.end
+                    elif not prev_is_other and curr_is_other:
+                        pass
+                    elif e.confidence > prev.confidence:
+                        non_overlapping[-1] = e
+                        last_end = e.end
+        
+        # If we found 2+ non-overlapping smaller spans, check coverage
+        if len(non_overlapping) >= 2:
+            smaller_coverage = sum(e.end - e.start for e in non_overlapping)
+            
+            if smaller_coverage >= largest_len * 0.5:
+                results = []
+                for small_span in non_overlapping:
+                    overlapping_at_pos = [
+                        e for e in group 
+                        if e.start < small_span.end and small_span.start < e.end
+                    ]
+                    
+                    merged = self._merge_overlapping(overlapping_at_pos, text)
+                    
+                    if merged is None:
+                        continue
+                    
+                    result = Entity(
+                        text=text[small_span.start:small_span.end],
+                        start=small_span.start,
+                        end=small_span.end,
+                        entity_type=merged.entity_type,
+                        confidence=merged.confidence,
+                        source=merged.source,
+                    )
+                    results.append(result)
+                
+                if results:
+                    return results
+        
+        result = self._merge_overlapping(group, text)
+        return [result] if result else []
+
     def _build_signals(
         self, 
         overlapping: List[Entity], 
