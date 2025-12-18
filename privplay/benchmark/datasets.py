@@ -63,110 +63,170 @@ class BenchmarkDataset:
 
 
 # =============================================================================
-# AI4Privacy Type Mapping - PRECISION FIX
+# AI4Privacy Type Mapping
 # =============================================================================
-# Non-PII types are mapped to None to exclude from evaluation.
-# These types (JOBTITLE, GENDER, HEIGHT, etc.) are not protected information
-# per HIPAA Safe Harbor and shouldn't count against precision/recall.
+# Maps AI4Privacy labels to our canonical EntityType values.
+# Must match what our PII-BERT v2 model outputs.
+# None = exclude from evaluation (not PII)
 
 AI4PRIVACY_MAPPING = {
-    # Names
+    # Names -> NAME_PERSON
     "FIRSTNAME": "NAME_PERSON",
     "LASTNAME": "NAME_PERSON", 
     "MIDDLENAME": "NAME_PERSON",
     "PREFIX": "NAME_PERSON",
     "SUFFIX": "NAME_PERSON",
+    "NAME": "NAME_PERSON",
+    "GIVENNAME": "NAME_PERSON",
+    "SURNAME": "NAME_PERSON",
+    "FULLNAME": "NAME_PERSON",
+    
+    # Credentials
     "USERNAME": "USERNAME",
+    "PASSWORD": "PASSWORD",
+    "PIN": "PASSWORD",
     
     # Contact
     "EMAIL": "EMAIL",
     "PHONENUMBER": "PHONE",
     "PHONE_NUMBER": "PHONE",
     "TEL": "PHONE",
+    "TELEPHONE": "PHONE",
+    "MOBILE": "PHONE",
+    "FAX": "FAX",
     
-    # Location
+    # Location -> ADDRESS
     "STREET": "ADDRESS",
+    "STREETADDRESS": "ADDRESS",
     "CITY": "ADDRESS",
     "STATE": "ADDRESS",
-    "ZIPCODE": "ZIP",
-    "ZIP": "ZIP",
     "COUNTY": "ADDRESS",
     "COUNTRY": "ADDRESS",
     "BUILDINGNUMBER": "ADDRESS",
     "SECONDARYADDRESS": "ADDRESS",
-    "STREETADDRESS": "ADDRESS",
     "ADDRESS": "ADDRESS",
+    
+    # ZIP codes
+    "ZIPCODE": "ZIP",
+    "ZIP": "ZIP",
+    "POSTALCODE": "ZIP",
+    "POSTCODE": "ZIP",
     
     # Government IDs
     "SSN": "SSN",
     "SOCIALSECURITY": "SSN",
+    "SOCIALSECURITYNUMBER": "SSN",
+    
     "DRIVERLICENSE": "DRIVER_LICENSE",
+    "DRIVERSLICENSE": "DRIVER_LICENSE",
+    "DRIVERS_LICENSE": "DRIVER_LICENSE",
+    
     "PASSPORT": "PASSPORT",
+    "PASSPORTNUMBER": "PASSPORT",
+    
+    # Account numbers
     "ACCOUNTNUMBER": "ACCOUNT_NUMBER",
+    "ACCOUNTNUM": "ACCOUNT_NUMBER",
+    "ACCOUNT": "ACCOUNT_NUMBER",
+    "TAXID": "ACCOUNT_NUMBER",
+    "TAX_ID": "ACCOUNT_NUMBER",
+    "TAXNUM": "ACCOUNT_NUMBER",
+    "IDCARDNUM": "ACCOUNT_NUMBER",
+    "NATIONALID": "ACCOUNT_NUMBER",
+    
+    # Bank accounts
     "IBAN": "BANK_ACCOUNT",
     "BIC": "BANK_ACCOUNT",
     "SWIFT": "BANK_ACCOUNT",
+    "BANKACCOUNT": "BANK_ACCOUNT",
     
     # Financial
     "CREDITCARDNUMBER": "CREDIT_CARD",
+    "CREDITCARD": "CREDIT_CARD",
     "CREDITCARDCVV": "CREDIT_CARD",
     "CREDITCARDISSUER": None,  # Not PII - card brand name
-    "CURRENCY": None,  # Not PII
-    "CURRENCYCODE": None,  # Not PII
-    "CURRENCYSYMBOL": None,  # Not PII
-    "CURRENCYNAME": None,  # Not PII
+    "CURRENCY": None,
+    "CURRENCYCODE": None,
+    "CURRENCYSYMBOL": None,
+    "CURRENCYNAME": None,
+    "AMOUNT": None,
+    
+    # Crypto
     "BITCOINADDRESS": "CRYPTO_ADDRESS",
     "ETHEREUMADDRESS": "CRYPTO_ADDRESS",
     "LITECOINADDRESS": "CRYPTO_ADDRESS",
-    "PIN": "PASSWORD",
-    "PASSWORD": "PASSWORD",
     
-    # Device identifiers
+    # Device identifiers -> DEVICE_ID
     "PHONEIMEI": "DEVICE_ID",
+    "IMEI": "DEVICE_ID",
+    "IMEISV": "DEVICE_ID",
+    "SERIALNUMBER": "DEVICE_ID",
+    "SERIAL": "DEVICE_ID",
     
-    # Medical / Health
+    # Vehicle -> VIN
+    "VEHICLEVIN": "VIN",
+    "VIN": "VIN",
+    "VEHICLEVRM": "VIN",
+    "LICENSEPLATE": "VIN",
+    "LICENSE_PLATE": "VIN",
+    
+    # Medical
     "MEDICALRECORD": "MRN",
-    "HEALTHPLAN": "HEALTH_PLAN",
-    "BLOOD_TYPE": None,  # Not PII alone
-    "HEIGHT": None,  # Not PII alone
-    "WEIGHT": None,  # Not PII alone
+    "MRN": "MRN",
+    "HEALTHPLAN": "HEALTH_PLAN_ID",
+    "BLOOD_TYPE": None,
+    "HEIGHT": None,
+    "WEIGHT": None,
     
     # Digital
     "IP": "IP_ADDRESS",
     "IPV4": "IP_ADDRESS",
     "IPV6": "IP_ADDRESS",
     "IPADDRESS": "IP_ADDRESS",
+    "IP_ADDRESS": "IP_ADDRESS",
+    
     "MAC": "MAC_ADDRESS",
     "MACADDRESS": "MAC_ADDRESS",
+    "MAC_ADDRESS": "MAC_ADDRESS",
+    
     "URL": "URL",
+    "WEBSITE": "URL",
+    "URI": "URL",
+    
     "USERAGENT": "USER_AGENT",
+    "USER_AGENT": "USER_AGENT",
     
     # Temporal
     "DATE": "DATE",
-    "DOB": "DATE_DOB",
-    "DATEOFBIRTH": "DATE_DOB",
-    "TIME": None,  # Not PII - time without date context
+    "TIME": "DATE",
+    "DATETIME": "DATE",
+    
+    "DOB": "DATE",
+    "DATEOFBIRTH": "DATE",
+    "BIRTHDATE": "DATE",
+    
     "AGE": "AGE",
+    
+    # GPS
+    "NEARBYGPSCOORDINATE": "GPS_COORDINATE",
+    "GPS": "GPS_COORDINATE",
+    "COORDINATE": "GPS_COORDINATE",
+    "COORDINATES": "GPS_COORDINATE",
     
     # Organization - not PII per HIPAA Safe Harbor
     "COMPANY": None,
     "COMPANYNAME": None,
     "ORGANIZATION": None,
+    "EMPLOYER": None,
     
-    # Other identifiers
-    "VEHICLEVIN": "DEVICE_ID",
-    "VEHICLEVRM": "DEVICE_ID",
-    "LICENSEPLATE": "DEVICE_ID",  # IS identifiable - keep it
-    "IMEI": "DEVICE_ID",
-    "IMEISV": "DEVICE_ID",
-    "SERIALNUMBER": "DEVICE_ID",
-    "NEARBYGPSCOORDINATE": "GPS_COORDINATE",
-    "ORDINALDIRECTION": None,  # Not PII - N/S/E/W
-    "GENDER": None,  # Not PII alone
-    "SEX": None,  # Not PII alone
-    "JOBAREA": None,  # Not PII
-    "JOBTITLE": None,  # Not PII
-    "JOBTYPE": None,  # Not PII
+    # Job info - not PII
+    "ORDINALDIRECTION": None,
+    "GENDER": None,
+    "SEX": None,
+    "JOBAREA": None,
+    "JOBTITLE": None,
+    "JOBTYPE": None,
+    "JOBDESCRIPTOR": None,
 }
 
 
@@ -176,15 +236,19 @@ def _normalize_label(label: str) -> Optional[str]:
     if label.startswith(("B-", "I-")):
         label = label[2:]
     
-    # Uppercase and remove spaces/underscores variations
-    label = label.upper().replace(" ", "").replace("-", "").replace("_", "")
+    # Try exact match first
+    if label.upper() in AI4PRIVACY_MAPPING:
+        return AI4PRIVACY_MAPPING[label.upper()]
     
-    # Check mapping
+    # Try without underscores/spaces
+    normalized = label.upper().replace(" ", "").replace("-", "").replace("_", "")
+    
     for key, value in AI4PRIVACY_MAPPING.items():
-        if label == key.upper().replace("_", ""):
-            return value  # Can be None for excluded types
+        if normalized == key.upper().replace("_", ""):
+            return value
     
-    # Default to None (exclude unknown types)
+    # Unknown type - exclude
+    logger.debug(f"Unknown label type: {label}")
     return None
 
 
@@ -253,9 +317,9 @@ def load_ai4privacy_dataset(
         
         sample_id = hashlib.md5(text.encode()).hexdigest()[:12]
         samples.append(BenchmarkSample(
-            id=f"ai4privacy_{sample_id}",
+            id=sample_id,
             text=text,
-            entities=filtered_entities,  # Use filtered list
+            entities=filtered_entities,
             source="ai4privacy",
             metadata={"index": idx},
         ))
@@ -263,53 +327,102 @@ def load_ai4privacy_dataset(
     logger.info(f"Loaded {len(samples)} samples with {len(entity_types_seen)} entity types")
     
     return BenchmarkDataset(
-        name="AI4Privacy PII-Masking-200k",
-        description="Large-scale PII masking dataset with 54 PII classes",
+        name="ai4privacy",
+        description="AI4Privacy PII-Masking-200k dataset",
         samples=samples,
         entity_types=sorted(entity_types_seen),
         source_url="https://huggingface.co/datasets/ai4privacy/pii-masking-200k",
     )
 
 
-def _parse_bio_tags(
-    tokens: List[str],
-    tags: List[int],
-    label_names: List[str],
-) -> List[AnnotatedEntity]:
-    """Parse BIO-tagged tokens into entities."""
+def _parse_privacy_mask(text: str, privacy_mask: List[Dict]) -> List[AnnotatedEntity]:
+    """Parse privacy_mask format from AI4Privacy."""
+    entities = []
+    
+    for mask in privacy_mask:
+        start = mask.get("start")
+        end = mask.get("end")
+        label = mask.get("label", "")
+        value = mask.get("value", "")
+        
+        if start is None or end is None:
+            continue
+        
+        # Get text from span
+        entity_text = text[start:end] if start < len(text) and end <= len(text) else value
+        
+        normalized = _normalize_label(label)
+        
+        entities.append(AnnotatedEntity(
+            text=entity_text,
+            start=start,
+            end=end,
+            entity_type=label,
+            normalized_type=normalized,
+        ))
+    
+    return entities
+
+
+def _parse_spans(text: str, spans: List[Dict]) -> List[AnnotatedEntity]:
+    """Parse spans format."""
+    entities = []
+    
+    for span in spans:
+        start = span.get("start", span.get("begin"))
+        end = span.get("end")
+        label = span.get("label", span.get("type", ""))
+        
+        if start is None or end is None:
+            continue
+        
+        entity_text = text[start:end]
+        normalized = _normalize_label(label)
+        
+        entities.append(AnnotatedEntity(
+            text=entity_text,
+            start=start,
+            end=end,
+            entity_type=label,
+            normalized_type=normalized,
+        ))
+    
+    return entities
+
+
+def _parse_bio_tags(tokens: List[str], tags: List[int], label_names: List[str]) -> List[AnnotatedEntity]:
+    """Parse BIO-tagged token sequences."""
     entities = []
     current_entity = None
+    current_start = 0
     position = 0
     
-    for i, (token, tag) in enumerate(zip(tokens, tags)):
-        # Get label name
-        if tag < len(label_names):
-            label = label_names[tag]
+    for i, (token, tag_id) in enumerate(zip(tokens, tags)):
+        if tag_id >= len(label_names):
+            tag = "O"
         else:
-            label = f"LABEL_{tag}"
+            tag = label_names[tag_id]
         
-        # Handle BIO tags
-        if label.startswith("B-"):
+        if tag.startswith("B-"):
             # Save previous entity
             if current_entity:
                 entities.append(current_entity)
             
-            # Start new entity
-            entity_type = label[2:]
-            normalized = _normalize_label(entity_type)
+            label = tag[2:]
+            normalized = _normalize_label(label)
             current_entity = AnnotatedEntity(
                 text=token,
                 start=position,
                 end=position + len(token),
-                entity_type=entity_type,
+                entity_type=label,
                 normalized_type=normalized,
             )
-        elif label.startswith("I-") and current_entity:
-            # Continue current entity
+        elif tag.startswith("I-") and current_entity:
+            # Continue entity
             current_entity.text += " " + token
             current_entity.end = position + len(token)
         else:
-            # O tag or mismatch - save current entity
+            # O tag or I- without B-
             if current_entity:
                 entities.append(current_entity)
                 current_entity = None
@@ -323,80 +436,34 @@ def _parse_bio_tags(
     return entities
 
 
-def _parse_privacy_mask(text: str, privacy_mask: List[Dict]) -> List[AnnotatedEntity]:
-    """Parse privacy mask annotations."""
-    entities = []
-    
-    for mask in privacy_mask:
-        entity_type = mask.get("label", mask.get("type", "OTHER"))
-        start = mask.get("start", 0)
-        end = mask.get("end", 0)
-        normalized = _normalize_label(entity_type)
-        
-        entities.append(AnnotatedEntity(
-            text=text[start:end],
-            start=start,
-            end=end,
-            entity_type=entity_type,
-            normalized_type=normalized,
-        ))
-    
-    return entities
-
-
-def _parse_spans(text: str, spans: List[Dict]) -> List[AnnotatedEntity]:
-    """Parse span annotations."""
-    entities = []
-    
-    for span in spans:
-        entity_type = span.get("label", span.get("type", "OTHER"))
-        start = span.get("start", span.get("begin", 0))
-        end = span.get("end", 0)
-        normalized = _normalize_label(entity_type)
-        
-        entities.append(AnnotatedEntity(
-            text=text[start:end],
-            start=start,
-            end=end,
-            entity_type=entity_type,
-            normalized_type=normalized,
-        ))
-    
-    return entities
-
+# =============================================================================
+# Synthetic PHI Dataset Generator
+# =============================================================================
 
 def load_synthetic_phi_dataset(
     num_samples: int = 100,
     seed: int = 42,
 ) -> BenchmarkDataset:
     """
-    Generate synthetic clinical documents with ground-truth PHI.
+    Generate synthetic PHI dataset for testing.
     
-    This creates realistic clinical notes using Faker with known
-    PHI locations for testing detection accuracy.
-    
-    Args:
-        num_samples: Number of samples to generate
-        seed: Random seed for reproducibility
-        
-    Returns:
-        BenchmarkDataset with generated samples
+    Creates realistic clinical documents with known PHI.
     """
     try:
         from faker import Faker
     except ImportError:
-        raise ImportError(
-            "faker library required. Install with: pip install faker"
-        )
+        raise ImportError("faker library required. Install with: pip install faker")
     
-    logger.info(f"Generating {num_samples} synthetic PHI samples...")
+    import random
+    random.seed(seed)
     
     fake = Faker()
     Faker.seed(seed)
     
     samples = []
-    entity_types_seen = set()
+    entity_types = set()
     
+    # Document generators
     generators = [
         _generate_clinical_note,
         _generate_lab_report,
@@ -405,29 +472,25 @@ def load_synthetic_phi_dataset(
     ]
     
     for i in range(num_samples):
-        # Rotate through generators
-        generator = generators[i % len(generators)]
+        generator = random.choice(generators)
         text, entities = generator(fake, i)
         
-        # Track entity types
         for e in entities:
-            entity_types_seen.add(e.normalized_type)
+            entity_types.add(e.normalized_type)
         
         samples.append(BenchmarkSample(
-            id=f"synthetic_{i:05d}",
+            id=f"synth_{i:05d}",
             text=text,
             entities=entities,
             source="synthetic_phi",
             metadata={"generator": generator.__name__},
         ))
     
-    logger.info(f"Generated {len(samples)} samples with {len(entity_types_seen)} entity types")
-    
     return BenchmarkDataset(
-        name="Synthetic PHI Dataset",
+        name="synthetic_phi",
         description="Synthetically generated clinical notes with ground-truth PHI",
         samples=samples,
-        entity_types=sorted(entity_types_seen),
+        entity_types=sorted(entity_types),
     )
 
 
@@ -456,47 +519,29 @@ def _generate_clinical_note(fake: 'Faker', idx: int) -> tuple:
         ))
     
     add_text("CLINICAL NOTE\n\nPatient: ")
-    add_entity(fake.name(), "PATIENT_NAME", "NAME_PATIENT")
+    add_entity(fake.name(), "PATIENT_NAME", "NAME_PERSON")
     add_text("\nMRN: ")
     add_entity(fake.numerify("########"), "MRN", "MRN")
     add_text("\nDOB: ")
-    add_entity(fake.date_of_birth().strftime("%m/%d/%Y"), "DOB", "DATE_DOB")
+    add_entity(fake.date_of_birth().strftime("%m/%d/%Y"), "DOB", "DATE")
     add_text("\nSSN: ")
     add_entity(fake.ssn(), "SSN", "SSN")
     
     add_text("\n\nChief Complaint: ")
     add_text(fake.sentence())
     
-    add_text("\n\nHistory: ")
-    add_entity(fake.first_name(), "PATIENT_FIRST", "NAME_PATIENT")
-    add_text(" reports symptoms for the past week. ")
-    add_text("Contact email: ")
-    add_entity(fake.email(), "EMAIL", "EMAIL")
-    add_text("\nPhone: ")
-    add_entity(fake.phone_number(), "PHONE", "PHONE")
-    
-    add_text("\n\nAddress: ")
-    add_entity(fake.address().replace("\n", ", "), "ADDRESS", "ADDRESS")
-    
-    add_text("\n\nFamily History: Patient's wife ")
-    add_entity(fake.first_name_female(), "RELATIVE_NAME", "NAME_RELATIVE")
-    add_text(" confirms the symptoms began last week.")
-    
-    add_text("\n\nObjective:\nVitals stable. ")
-    add_text(fake.sentence())
-    
-    add_text("\n\nAssessment:\n")
-    add_text(fake.sentence())
+    add_text("\n\nHistory of Present Illness:\n")
+    add_text(fake.paragraph())
     
     add_text("\n\nPlan:\n1. ")
     add_text(fake.sentence())
     add_text("\n2. Follow up with Dr. ")
-    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PROVIDER")
+    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PERSON")
     add_text(" at ")
     add_entity(fake.phone_number(), "PHONE", "PHONE")
     
     add_text("\n\nSigned: Dr. ")
-    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PROVIDER")
+    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PERSON")
     
     return "".join(parts), entities
 
@@ -526,14 +571,14 @@ def _generate_lab_report(fake: 'Faker', idx: int) -> tuple:
         ))
     
     add_text("LABORATORY REPORT\n\nPatient: ")
-    add_entity(fake.name(), "PATIENT_NAME", "NAME_PATIENT")
+    add_entity(fake.name(), "PATIENT_NAME", "NAME_PERSON")
     add_text("\nAccount #: ")
     add_entity(fake.numerify("##########"), "ACCOUNT", "ACCOUNT_NUMBER")
     add_text("\nCollection Date: ")
     add_entity(fake.date_this_month().strftime("%m/%d/%Y"), "DATE", "DATE")
     
     add_text("\n\nOrdering Physician: ")
-    add_entity(f"Dr. {fake.name()}", "PROVIDER_NAME", "NAME_PROVIDER")
+    add_entity(f"Dr. {fake.name()}", "PROVIDER_NAME", "NAME_PERSON")
     
     add_text("\n\nTEST RESULTS:\n")
     tests = ["CBC", "BMP", "Lipid Panel", "TSH", "HbA1c"]
@@ -579,9 +624,9 @@ def _generate_radiology_report(fake: 'Faker', idx: int) -> tuple:
     add_entity(fake.date_this_month().strftime("%m/%d/%Y"), "DATE", "DATE")
     
     add_text("\n\nPatient: ")
-    add_entity(fake.name(), "PATIENT_NAME", "NAME_PATIENT")
+    add_entity(fake.name(), "PATIENT_NAME", "NAME_PERSON")
     add_text("\nDOB: ")
-    add_entity(fake.date_of_birth().strftime("%m/%d/%Y"), "DOB", "DATE_DOB")
+    add_entity(fake.date_of_birth().strftime("%m/%d/%Y"), "DOB", "DATE")
     add_text("\nMRN: ")
     add_entity(fake.numerify("########"), "MRN", "MRN")
     
@@ -595,7 +640,7 @@ def _generate_radiology_report(fake: 'Faker', idx: int) -> tuple:
     add_text(fake.sentence())
     
     add_text("\n\nDictated by: Dr. ")
-    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PROVIDER")
+    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PERSON")
     add_text("\nTranscribed: ")
     add_entity(fake.date_this_month().strftime("%m/%d/%Y"), "DATE", "DATE")
     
@@ -630,7 +675,7 @@ def _generate_prescription(fake: 'Faker', idx: int) -> tuple:
     add_entity(fake.date_this_month().strftime("%m/%d/%Y"), "DATE", "DATE")
     
     add_text("\n\nPatient: ")
-    add_entity(fake.name(), "PATIENT_NAME", "NAME_PATIENT")
+    add_entity(fake.name(), "PATIENT_NAME", "NAME_PERSON")
     add_text("\nAddress: ")
     add_entity(fake.address().replace("\n", ", "), "ADDRESS", "ADDRESS")
     add_text("\nPhone: ")
@@ -644,7 +689,7 @@ def _generate_prescription(fake: 'Faker', idx: int) -> tuple:
     add_text(f"\nRefills: {fake.random_int(0, 5)}")
     
     add_text("\n\nPrescriber: Dr. ")
-    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PROVIDER")
+    add_entity(fake.name(), "PROVIDER_NAME", "NAME_PERSON")
     add_text("\nDEA: ")
     add_entity(fake.bothify("??#######"), "DEA", "ACCOUNT_NUMBER")
     add_text("\nNPI: ")

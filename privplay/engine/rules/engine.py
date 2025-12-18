@@ -216,6 +216,10 @@ def is_password_like(candidate: str, full_text: str, position: int) -> tuple:
     if len(candidate) < 8 or len(candidate) > 64:
         return False, 0.0
     
+    # Exclude name-like patterns (Name.Name, Name_Name) - these are usernames, not passwords
+    if re.match(r'^[A-Z][a-z]+[._][A-Z][a-z]+$', candidate):
+        return False, 0.0
+    
     # Must have mixed character types (not all letters or all digits)
     has_letters = any(c.isalpha() for c in candidate)
     has_digits = any(c.isdigit() for c in candidate)
@@ -609,6 +613,15 @@ class RuleEngine:
             confidence=0.95,
         ))
         
+        # Credit Card with context (doesn't require Luhn - for test/fake data)
+        # Matches 13-19 digits near card-related keywords
+        self.add_rule(Rule(
+            name="cc_context",
+            pattern=re.compile(r'(?:card|credit|debit|payment|visa|mastercard|amex|discover)[\s#:]*(\d{13,19})\b', re.I),
+            entity_type=EntityType.CREDIT_CARD,
+            confidence=0.88,
+        ))
+        
         # IBAN (International Bank Account Number) with validation
         self.add_rule(Rule(
             name="iban",
@@ -795,6 +808,24 @@ class RuleEngine:
         self.add_rule(Rule(
             name="social_handle",
             pattern=re.compile(r'@[A-Za-z][A-Za-z0-9_]{2,29}\b'),
+            entity_type=EntityType.USERNAME,
+            confidence=0.85,
+        ))
+        
+        # Username - Name.Name pattern (e.g., Selena.Swift)
+        # Exclude honorifics with negative lookahead, require 3+ chars per part
+        self.add_rule(Rule(
+            name="username_dot",
+            pattern=re.compile(r'\b(?!Mr\.|Ms\.|Mrs\.|Dr\.|Prof\.)[A-Z][a-z]{2,}\.[A-Z][a-z]{2,}\b'),
+            entity_type=EntityType.USERNAME,
+            confidence=0.85,
+        ))
+        
+        # Username - Name_Name pattern (e.g., Darrick_Kunze)
+        # Require 3+ chars per part to avoid short fragments
+        self.add_rule(Rule(
+            name="username_underscore",
+            pattern=re.compile(r'\b[A-Z][a-z]{2,}_[A-Z][a-z]{2,}\b'),
             entity_type=EntityType.USERNAME,
             confidence=0.85,
         ))
@@ -1027,6 +1058,27 @@ class RuleEngine:
             name="gps_coordinates",
             pattern=re.compile(r'\b-?\d{1,3}\.\d{4,},\s*-?\d{1,3}\.\d{4,}\b'),
             entity_type=EntityType.GPS_COORDINATE,
+            confidence=0.90,
+        ))
+        
+        # Street name only (e.g., "Center Street", "Oak Avenue")
+        # Excludes Dr/Drive due to Doctor conflicts
+        self.add_rule(Rule(
+            name="street_name",
+            pattern=re.compile(
+                r'\b[A-Z][a-z]{2,}\s+(?:Street|Avenue|Road|Boulevard|Lane|Way|Court|Place|Circle|Highway|Parkway|Terrace)\b'
+            ),
+            entity_type=EntityType.ADDRESS,
+            confidence=0.82,
+        ))
+        
+        # Full street address with number (e.g., "123 Main Street")
+        self.add_rule(Rule(
+            name="street_address_numbered",
+            pattern=re.compile(
+                r'\b\d{1,5}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Place|Pl)\b'
+            ),
+            entity_type=EntityType.ADDRESS,
             confidence=0.90,
         ))
         
